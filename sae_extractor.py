@@ -14,7 +14,7 @@ import time
 import string
 import random
 import subprocess
-from scapy.all import sniff, Dot11Auth
+from scapy.all import sniff, Dot11Auth, AsyncSniffer
 
 # ==============================================================================
 # CONFIGURATION
@@ -69,6 +69,9 @@ def main():
 
     print(f"[*] Starting WPA3-SAE Parameter Extraction (Hidden SSID Support enabled)")
     print(f"[*] Target Network: {TARGET_SSID} ({TARGET_BSSID})")
+
+    hidden_input = input("[?] Is the target network hidden? (y/n): ").strip().lower()
+
     
     freq = get_freq(TARGET_CHANNEL)
     os.system(f"iwconfig {MONITOR_IFACE} channel {TARGET_CHANNEL}")
