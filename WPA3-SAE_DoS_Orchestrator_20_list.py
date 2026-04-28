@@ -206,12 +206,13 @@ AMPLIFICATION_REFLECTOR_APS_2_4GHZ =[
 # ======================== ADAPTER CONFIGURATION ======================================
 ADAPTER_KONFIGURATION = {
     # --- 5 GHz Band ---
-    # "wlan2mon": {"band": "5GHz", "angriff": "amplification"},
+    # "wlan0mon": {"band": "5GHz", "angriff": "amplification"},
+    # "wlan1mon": {"band": "5GHz", "angriff": "amplification"},
     
     # --- 2.4 GHz Band ---
-    # "wlan1mon": {"band": "2.4GHz", "angriff": "amplification"},
-    "wlan1mon": {"band": "2.4GHz", "angriff": "double_decker"},
-    "wlan0mon": {"band": "2.4GHz", "angriff": "double_decker"}
+    # "wlan2mon": {"band": "2.4GHz", "angriff": "amplification"},
+    # "wlan3mon": {"band": "2.4GHz", "angriff": "double_decker"},
+    "wlan4mon": {"band": "2.4GHz", "angriff": "double_decker"}
 }
 
 # ==============================================================================================
