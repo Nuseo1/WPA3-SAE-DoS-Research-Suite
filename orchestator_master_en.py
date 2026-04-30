@@ -24,7 +24,7 @@ import random
 from multiprocessing import Process, Value
 from scapy.all import (
     RadioTap, Dot11, Dot11Auth, Dot11Deauth, EAPOL,
-    sendp, RandMAC
+    sendp, RandMAC, Raw
 )
 
 # =====================================================================================
