@@ -55,6 +55,14 @@ MANUAL_CHANNEL_5GHZ   = "36"     # Typical 5 GHz channel
 MANUAL_CHANNEL_2_4GHZ = "1"      # Typical 2.4 GHz channel
 
 # --- 5. TARGET CLIENTS (For targeted attacks like Deauth-Flood) ---
+# Enter the real MAC addresses of connected devices here.
+#
+# IMPORTANT FOR RADIO CONFUSION ATTACK:
+# The clients listed here must be visible on the band you are attacking FROM.
+# - If you start the attack on 2.4 GHz (Adapter on Channel 1-13): 
+#   -> Enter MAC addresses of clients currently connected to 2.4 GHz.
+# - If you start the attack on 5 GHz (Adapter on Channel 36+):   
+#   -> Enter MAC addresses of clients currently connected to 5 GHz.
 TARGET_STA_MACS =[
     "11:22:33:44:55:66",
 ]
