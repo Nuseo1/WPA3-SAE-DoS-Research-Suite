@@ -756,41 +756,41 @@ def main():
     print(f"\n[INFO] Starting {len(ADAPTER_KONFIGURATION)} attack processes...")
     print("Press Ctrl+C to stop.\n")
     
-try:
-    while True:
-        with channel_lock:
-            ap_targets['5ghz']['channel'] = shared_channels.get('5GHz', MANUELLER_KANAL_5GHZ)
-            ap_targets['2.4ghz']['channel'] = shared_channels.get('2.4GHz', MANUELLER_KANAL_2_4GHZ)
-        
-        for iface, cfg in ADAPTER_KONFIGURATION.items():
-            attack, band = cfg['angriff'], cfg.get('band', '5GHz')
-            if attack not in ATTACKS: continue
+    try:
+        while True:
+            with channel_lock:
+                ap_targets['5ghz']['channel'] = shared_channels.get('5GHz', MANUELLER_KANAL_5GHZ)
+                ap_targets['2.4ghz']['channel'] = shared_channels.get('2.4GHz', MANUELLER_KANAL_2_4GHZ)
             
-            ap = ap_targets.get('5ghz' if band=='5GHz' else '2.4ghz')
-            if not ap: continue
-            
-            restart_needed = False
-            
-            if iface not in procs or not procs[iface].is_alive():
-                restart_needed = True
-            elif active_channels.get(iface) != ap['channel']:
-                restart_needed = True
-            
-            if restart_needed:
+            for iface, cfg in ADAPTER_KONFIGURATION.items():
+                attack, band = cfg['angriff'], cfg.get('band', '5GHz')
+                if attack not in ATTACKS: continue
                 
-                active_channels[iface] = ap['channel']
-                print(f"[START] {iface} ({band}): {attack} on CH {ap['channel']}")
+                ap = ap_targets.get('5ghz' if band=='5GHz' else '2.4ghz')
+                if not ap: continue
+                
+                restart_needed = False
+                
+                if iface not in procs or not procs[iface].is_alive():
+                    restart_needed = True
+                elif active_channels.get(iface) != ap['channel']:
+                    restart_needed = True
+                
+                if restart_needed:
+                    active_channels[iface] = ap['channel']
+                    print(f"[START] {iface} ({band}): {attack} on CH {ap['channel']}")
+            
+            elapsed = time.time()
+            status = " | ".join([f"{i}:{counters[i].value}pkts" for i in procs])
+            sys.stdout.write(f"\r[MONITOR] {elapsed:.1f}s | {status}")
+            sys.stdout.flush()
+            time.sleep(0.5)
+            
+    except KeyboardInterrupt:
+        print("\n[INFO] Stopped by user.")
         
-        elapsed = time.time()
-        status = " | ".join([f"{i}:{counters[i].value}pkts" for i in procs])
-        sys.stdout.write(f"\r[MONITOR] {elapsed:.1f}s | {status}")
-        sys.stdout.flush()
-        time.sleep(0.5)
-        
-except KeyboardInterrupt:
-    print("\n[INFO] Stopped by user.")
-finally:
-    cleanup(procs)
+    finally:
+        cleanup(procs)
         if scanner_proc and scanner_proc.is_alive():
             scanner_proc.terminate()
             scanner_proc.join()
