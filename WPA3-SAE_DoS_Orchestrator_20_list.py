@@ -176,7 +176,7 @@ ADAPTER_KONFIGURATION = {
      "wlan3mon": {"band": "5GHz", "angriff": "cookie_guzzler"},
      "wlan5mon": {"band": "5GHz", "angriff": "double_decker"},        
     # --- 2.4 GHz Band ---
-#    "wlan7mon": {"band": "2.4GHz", "angriff": "cookie_guzzler"}
+     "wlan7mon": {"band": "2.4GHz", "angriff": "cookie_guzzler"}
     # add more adapters as needed
 }
 
