@@ -260,10 +260,22 @@ def create_sae_payload_bytes(scalar: bytes, finite: bytes) -> bytes:
     return b'\x13\x00' + scalar[:32] + finite[:64]
 
 def get_random_sae_bytes(scalar_list, finite_list):
-    valid_s = [x for x in scalar_list if "INSERT" not in x and len(x) == 64]
-    valid_f = [x for x in finite_list if "INSERT" not in x and len(x) == 128]
-    if not valid_s or not valid_f: return None, None
-    s_hex, f_hex = random.choice(valid_s), random.choice(valid_f)
+    """
+    Safely pick a valid hex string PAIR from lists and convert to bytes.
+    CRITICAL: Scalar and Finite MUST be picked from the same index 
+    to remain a mathematically valid cryptographic pair!
+    """
+    valid_pairs = [
+        (s, f) for s, f in zip(scalar_list, finite_list)
+        if "INSERT" not in s and len(s) == 64 
+        and "INSERT" not in f and len(f) == 128
+    ]
+    
+    if not valid_pairs:
+        return None, None
+        
+    s_hex, f_hex = random.choice(valid_pairs)
+    
     return bytes.fromhex(s_hex), bytes.fromhex(f_hex)
 
 def cleanup(procs):
