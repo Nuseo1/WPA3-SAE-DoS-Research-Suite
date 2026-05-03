@@ -8,9 +8,14 @@ Efstratios Chatzoglou, Georgios Kambourakis, Constantinos Kolias
 
 ---
 
-## ⚠️ Disclaimer
+## Recommended Hardware
 
-This software is intended **exclusively** for educational and research purposes as well as authorised security assessments. Only run these scripts against networks you own or for which you have explicit written permission. The authors accept no responsibility for misuse.
+For the best results when conducting the WPA3‑SAE DoS attacks described in the paper, have two Wi‑Fi adapters at hand:
+
+**Injection adapter**  
+   - **Alfa AWUS036ACH** (802.11ac, Realtek RTL8812AU chipset)  
+     This was the attacker’s primary adapter in the paper. It was used to fire the large bursts of spoofed SAE Commit and Auth frames (frame injection).  
+   - Any other adapter built on the **Realtek RTL8812AU chipset** will also do. The key requirement is reliable packet injection in monitor mode.
 
 ---
 
@@ -223,3 +228,9 @@ Contributions are welcome – please open an issue or submit a pull request. Mak
 ## 📄 License
 
 This project is licensed under the MIT License.
+
+---
+
+## ⚠️ Disclaimer
+
+This software is intended **exclusively** for educational and research purposes as well as authorised security assessments. Only run these scripts against networks you own or for which you have explicit written permission. The authors accept no responsibility for misuse.
