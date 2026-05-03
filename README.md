@@ -38,6 +38,15 @@ This software is intended **exclusively** for educational and research purposes 
 
 ---
 
+## ⚡ The "20-List" Advantage
+
+Early implementations of WPA3 DoS attacks sent the exact same cryptographic payload over and over again (single Scalar/Finite element). While these early DoS scripts sent identical payloads that simple WIPS/Firewall rules could easily fingerprint and drop before processing, this suite rotates 20 unique payloads to mimic a highly realistic, distributed burst of connection attempts.
+
+Note: The WPA3 Anti-Clogging Mechanism (ACM) itself only relies on connection thresholds and token exchanges—it does not perform payload anomaly detection. However, rotating valid payloads ensures the attack traffic remains indistinguishable from legitimate devices, proactively bypassing potential heuristic WIDS/WIPS filters that monitor for static, repeated elliptic curve points.
+
+**This orchestrator implements a 20-List Rotation:** 
+By extracting 20 unique SAE parameter pairs (using 20 different fake passwords) and randomly rotating them for every single packet sent, the attack bypasses payload-fingerprinting. The router views every incoming packet as a completely new, legitimate connection attempt from a unique client, forcing it to allocate RAM and CPU cycles for each request, ultimately leading to device exhaustion.
+
 ## ⚙️ Prerequisites
 
 | Component | Version / Note |
