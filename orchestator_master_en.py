@@ -37,24 +37,20 @@ from scapy.all import (
 TARGET_BSSID_5GHZ = "AA:BB:CC:DD:EE:11"      # Replace with actual 5 GHz BSSID
 TARGET_BSSID_2_4GHZ = "AA:BB:CC:DD:EE:11"    # Replace with actual 2.4 GHz BSSID
 
-# --- 2. SAE PARAMETERS (LIST-BASED, EXTRACTED VIA WIRESHARK) ---
-# IMPORTANT: Replace placeholders with at least 20 valid pairs per band!
+# --- 2. SAE PARAMETERS  ---
 SAE_SCALAR_2_4_HEX_LIST = [
-    'b600c5f488079fe458aab69e04837002e993caaa8b65d60da3660ccd31babfd8',
-    # ... add 19 more valid 2.4GHz scalars here ...
+        # Paste all 20 scalar hex lines from sae_extractor.py here
 ]
 SAE_FINITE_2_4_HEX_LIST = [
-    '060a86f9c543153583e74c380a00a150f3c731ac6d17126c7e5f5299d31ddc0c5c4aade74138d113e3c8c5ec3395bfbcf7247c155a26acc8e817257b5d025b18',
-    # ... add 19 more valid 2.4GHz finites here ...
+        # Paste all 20 finite hex lines from sae_extractor.py here
 ]
 SAE_SCALAR_5_HEX_LIST = [
-    '11362c5aae0a1e775420100e5b3dae049c4ec0eb933149708ff05dc67e04d13c',
-    # ... add 19 more valid 5GHz scalars here ...
+        # Paste all 20 scalar hex lines from sae_extractor.py here
 ]
 SAE_FINITE_5_HEX_LIST = [
-    '03da8f5a7e810a0243cf087b5906654c6689278db667ceac6ab9e6aba49bdfcbb46cbc4211e0338bc0414f9a5a1a11687e2b04f57c7db36694e0554e3f121a82',
-    # ... add 19 more valid 5GHz finites here ...
+        # Paste all 20 finite hex lines from sae_extractor.py here
 ]
+
 # --- 3. SCANNER / MANUAL CHANNELS ---
 SCANNER_INTERFACE = ""       #wlan0mon
 MANUELLER_KANAL_5GHZ = "104"
