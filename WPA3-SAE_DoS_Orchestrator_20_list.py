@@ -57,24 +57,18 @@ FINITE_BYTES = 64
 TARGET_BSSID_5GHZ = "AA:BB:CC:DD:EE:11"      # Replace with actual 5 GHz BSSID
 TARGET_BSSID_2_4GHZ = "AA:BB:CC:DD:EE:11"    # Replace with actual 2.4 GHz BSSID
 
-# --- 2. SAE PARAMETERS (EXTRACTED VIA WIRESHARK) ---
-# IMPORTANT: Provide at least 20 valid pairs per band. Each scalar=64 hex chars (32B)
-# Each finite=128 hex chars (64B). Extract using WRONG passwords & filter wlan.fc.type_subtype==0x0b
+# --- 2. SAE PARAMETERS  ---
 SAE_SCALAR_2_4_HEX_LIST = [
-    '142edcd835caf10c7bc72e5f3f783ecadff92856f2a1f8f208ff9c658aa30984',
-    # ... add 19 more valid 2.4GHz scalars here ...
+        # Paste all 20 scalar hex lines from sae_extractor.py here
 ]
 SAE_FINITE_2_4_HEX_LIST = [
-    'f7fd7e5b2f4998145db3317e1f8d054718b576a6249e00730091d0514829971a9181661a184b03228a6f2cf780ffc4d90b21bf23706c1ff453bb67780fed4221',
-    # ... add 19 more valid 2.4GHz finites here ...
+        # Paste all 20 finite hex lines from sae_extractor.py here
 ]
 SAE_SCALAR_5_HEX_LIST = [
-    '738fb4e7d0fec328d33871ff2000aa3832d3af54147ad406e87bce85e87be450',
-    # ... add 19 more valid 5GHz scalars here ...
+        # Paste all 20 scalar hex lines from sae_extractor.py here
 ]
 SAE_FINITE_5_HEX_LIST = [
-    '6eddc3a908ed736b78220316d03f343f41a6440cfcc366fb729680bf6706cd1ff21106717ce6e6daf8d89d1f77b7579806a5490ff7f4c8924bac08f964f5cc3e',
-    # ... add 19 more valid 5GHz finites here ...
+        # Paste all 20 finite hex lines from sae_extractor.py here
 ]
 
 # --- 3. OPTIONAL SCANNER ---
