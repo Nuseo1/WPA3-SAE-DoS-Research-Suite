@@ -16,8 +16,9 @@ For the best results when conducting the WPA3‑SAE DoS attacks described in the
    - **Alfa AWUS036ACH** (802.11ac, Realtek RTL8812AU chipset)  
      This was the attacker’s primary adapter in the paper. It was used to fire the large bursts of spoofed SAE Commit and Auth frames (frame injection).  
    - Any other adapter built on the **Realtek RTL8812AU chipset** will also do. The key requirement is reliable packet injection in monitor mode.
+> **Note:** The **Atheros AR9271** chipset was also found to work for these attacks.  
+> Chipsets **Ralink RT3070**, **MediaTek MT7612U**, and **Mediatek MT7921U** do **not** work for this attack.
 
-> **Note:** Other adapters based on chipsets such as Ralink RT3070, MediaTek MT7612U, Mediatek MT7921U, and Atheros AR9271 were tested but **did not** yield the desired results for these attacks.
 ---
 
 ## 📦 What’s Inside
