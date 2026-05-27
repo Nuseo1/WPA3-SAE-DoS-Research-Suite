@@ -54,6 +54,21 @@ Note: The WPA3 Anti-Clogging Mechanism (ACM) itself only relies on connection th
 **This orchestrator implements a 20-List Rotation:** 
 By extracting 20 unique SAE parameter pairs (using 20 different fake passwords) and randomly rotating them for every single packet sent, the attack bypasses payload-fingerprinting. The router views every incoming packet as a completely new, legitimate connection attempt from a unique client, forcing it to allocate RAM and CPU cycles for each request, ultimately leading to device exhaustion.
 
+
+---
+
+## 🆕 New: Multi-Group Support (Groups 19–24)
+
+Previously, the suite exclusively supported **Group 19** (ECC, NIST P-256) for SAE parameter extraction and injection. The new script [`WPA3-SAE_DoS_Orchestrator_20_list-new.py`](https://github.com/Nuseo1/WPA3-SAE-DoS-Research-Suite/blob/dev/WPA3-SAE_DoS_Orchestrator_20_list-new.py) extends this to full support for both **Scalar and Finite Field elements across Groups 19–24**, covering additional ECC and FFC groups defined in the SAE standard.
+
+The required group-specific parameter values are extracted using [`sae_extractor_arxiv_all_groups.py`](https://github.com/Nuseo1/WPA3-SAE-DoS-Research-Suite/blob/dev/sae_extractor_arxiv_all_groups.py), which replaces `sae_extractor.py` for multi-group scenarios.
+
+### ⚠️ Requirement: wpa_supplicant 2.11
+
+For [`sae_extractor_arxiv_all_groups.py`](https://github.com/Nuseo1/WPA3-SAE-DoS-Research-Suite/blob/dev/sae_extractor_arxiv_all_groups.py) to function correctly with the new group definitions, **wpa_supplicant version 2.11** must be installed.
+
+> **Kali Linux users:** The standard Kali Linux repositories typically ship an older version of `wpa_supplicant`. Using an outdated version will result in extraction errors when targeting groups other than Group 19. Please install version 2.11 manually before using the multi-group extractor.
+
 ## ⚙️ Prerequisites
 
 | Component | Version / Note |
