@@ -27,13 +27,13 @@ For the best results when conducting the WPA3‑SAE DoS attacks described in the
 |:---|:---|
 | `sae_extractor.py` | Automatically extracts 20 valid SAE parameter pairs (Scalar + Finite) via simulated failed authentications. |
 | `WPA3‑SAE_DoS_Orchestrator_20_list.py` | **Stealth‑optimised** orchestrator – rotates 20 unique SAE payloads to bypass WIDS/WIPS fingerprinting. |
-| `orchestator_master_en.py` | **Scientifically accurate** orchestrator – implements the paper’s exact two‑phase methodology, vendor‑specific cases I–XIII, and PMF amplification for reproducible experiments. |
+| `orchestrator_master_en.py` | **Scientifically accurate** orchestrator – implements the paper’s exact two‑phase methodology, vendor‑specific cases I–XIII, and PMF amplification for reproducible experiments. |
 
 ---
 
 ## 🔀 Which Orchestrator Should You Use?
 
-| Feature | `WPA3‑SAE_DoS_Orchestrator_20_list.py` | `orchestator_master_en.py` |
+| Feature | `WPA3‑SAE_DoS_Orchestrator_20_list.py` | `orchestrator_master_en.py` |
 |:---|:---|:---|
 | **Primary Goal** | Operational stealth & WIDS bypass | Academic reproducibility & exact paper alignment |
 | **SAE Payloads** | Rotates 20 unique pairs per packet | Rotates 20 unique **paired** Scalars & Finites per band (anti‑fingerprinting) |
@@ -131,7 +131,7 @@ ADAPTER_KONFIGURATION = {
 }
 ```
 
-#### 🔸 For `orchestator_master_en.py` (scientific)
+#### 🔸 For `orchestrator_master_en.py` (scientific)
 
 1. Insert the extracted arrays into `SAE_SCALAR_2_4_HEX_LIST`, `SAE_FINITE_2_4_HEX_LIST`, `SAE_SCALAR_5_HEX_LIST`, and `SAE_FINITE_5_HEX_LIST`.  
 2. Set `TARGET_BSSID_*` and the manual channels.  
@@ -158,7 +158,7 @@ ADAPTER_KONFIGURATION = {
 sudo python3 WPA3-SAE_DoS_Orchestrator_20_list.py
 
 # Scientifically accurate attack
-sudo python3 orchestator_master_en.py
+sudo python3 orchestrator_master_en.py
 ```
 
 Stop with **Ctrl + C** – resources will be cleaned up automatically.
@@ -217,7 +217,7 @@ Stop with **Ctrl + C** – resources will be cleaned up automatically.
 
 ## 📊 Scientific Notes
 
-* `orchestator_master_en.py` implements **burst‑mode timing** (`inter=0.0001`, 128 frames/burst) exactly as described in Section 3.3 of the paper.  
+* `orchestrator_master_en.py` implements **burst‑mode timing** (`inter=0.0001`, 128 frames/burst) exactly as described in Section 3.3 of the paper.  
 * Radio Confusion follows the **two‑phase sequence** from Section 6.6:  
   – ~300 bursts on the opposite band to stress the driver,  
   – followed by ~200 bursts on the target band.  
